@@ -7,7 +7,6 @@
 #include <glog/logging.h>
 #include "DataLoader.cuh"
 #include "common.h"
-//#include "cufuse.cuh"
 #include "cusp.cuh"
 #include "flex.cuh"
 
