@@ -52,9 +52,6 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
     const uint32_t warp_id = threadIdx.x / WARPSZ;
 	//const uint32_t warps = (blockDim.x + WARPSZ - 1)/WARPSZ;
 
-    //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-        //printf("@63:    processing is ahead\n");
-    //}
 	// now we restrain "tn" in {4,8,16,32}
 	__shared__ float curB[warps][tn*32]; // 2 warps && each warp needs tn*8*4 matB float entries
 	float res[tm];
@@ -69,18 +66,16 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
 	for (int row_idx=blockIdx.x*tileRows_perBlk; row_idx<(spH+tm-1)/tm; row_idx += (gridDim.x*tileRows_perBlk)){ // over C rows
 	   
         int tile_curR_id = 0, tile_nxtR_id = 0;
-        int temp_tile_id = 0;
-        if (lane_id<2){
-            temp_tile_id = tileRowPtr[row_idx+lane_id]; 
-        }
-        __syncwarp();
-        tile_curR_id = __shfl_sync(FULL_MASK, temp_tile_id, 0);
-        tile_nxtR_id = __shfl_sync(FULL_MASK, temp_tile_id, 1);
+        //int temp_tile_id = 0;
+        //if (lane_id<2){
+        //    temp_tile_id = tileRowPtr[row_idx+lane_id]; 
+        //}
+        //__syncwarp();
+        //tile_curR_id = __shfl_sync(FULL_MASK, temp_tile_id, 0);
+        //tile_nxtR_id = __shfl_sync(FULL_MASK, temp_tile_id, 1);
+        tile_curR_id = tileRowPtr[row_idx]; 
+        tile_curR_id = tileRowPtr[row_idx+1]; 
 
-        //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-        //    printf("@81:    gridDim.x = %d, row_idx = %d, tile_curR_id = %d, tile_nxtR_id = %d\n", gridDim.x, row_idx, tile_curR_id, tile_nxtR_id);
-        //}    
-        
         for (int col_idx=warp_id*(32*computeWidth); col_idx<k; col_idx += warps*(32*computeWidth)){  // over C tile columns
              
             int tiles = 0;
@@ -89,9 +84,6 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
 
                 uint32_t mask_tiles = __ballot_sync(FULL_MASK, tile_id+lane_id<tile_nxtR_id);
                 tiles = __popc(mask_tiles); // maximum # tiles can be loaded in cur row 
-                //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-                //    printf("@91:    col_idx = %d, tiles = %d\n", col_idx, tiles);
-                //} 
                 
                 int start_of_tile = 0, nnz_of_tile = 0, bitmap_of_tile = 0, col_of_tile = 0;
                 if (tile_curR_id+lane_id<tile_nxtR_id){
@@ -102,10 +94,6 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
                     col_of_tile = tileLeftCol[tile_id+lane_id];
                 }
 
-                //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-                //    printf("@106:    start_of_tile = %d, nnz_of_tile = %d, bitmap_of_tile = %d, col_of_tile = %d\n", start_of_tile, nnz_of_tile, bitmap_of_tile, col_of_tile);
-                //} 
-
                 // use all loaded tiles
                 for(int tile_cnt = 0; tile_cnt<tiles; ++tile_cnt){
                     int start_cur_tile = __shfl_sync(FULL_MASK, start_of_tile, tile_cnt);
@@ -113,16 +101,10 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
                     int bitmap_cur_tile = __shfl_sync(FULL_MASK, bitmap_of_tile, tile_cnt);
                     int col_cur_tile = __shfl_sync(FULL_MASK, col_of_tile, tile_cnt);
                     
-                    //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-                    //    printf("@118:    start_cur_tile = %d, nnz_cur_tile = %d, bitmap_cur_tile = %d, col_cur_tile = %d\n", start_cur_tile, nnz_cur_tile, bitmap_cur_tile, col_cur_tile);
-                    //} 
 					// load requiring B rows to smem
 					for (int j=0; j<tn; ++j){
 						if ((bitmap_cur_tile & (1<<j)) && col_idx+lane_id<k){
                             curB[warp_id][j*32+lane_id] = mat_b[(col_cur_tile+j)*k + col_idx + lane_id];
-                            //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-                            //    printf("@122:   c = %d, B = %f, shB = %f\n", col_cur_tile+j, mat_b[(col_cur_tile+j)*k + col_idx + lane_id], curB[warp_id][j*32+lane_id]);
-                            //}
 						}
 					}
 					//__syncwarp(); // I doubt if it is necessary besause warp is the minimum sheduling unit
@@ -146,22 +128,15 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
                 			float v = __shfl_sync(FULL_MASK, val, it);
                 			int rc = __shfl_sync(FULL_MASK, rcidx, it);
 
-                            //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-                            //    printf("@148:   v = %f, r = %d, c = %d, B = %f\n", v, rc>>16, rc & 0x0000ffff, curB[warp_id][(rc & 0x0000ffff)*32 + lane_id]);
-                            //} 
-
                 			res[rc>>16] += v * curB[warp_id][(rc & 0x0000ffff)*32 + lane_id];
                 		}
 					}// end visiting all nz in a sparse tile
                     
-                    //if (blockIdx.x==0 && warp_id==0 && lane_id==0){
-                    //    printf("@156:   tile_id = %d -------------------------------\n", tile_cnt);
-                    //} 
                 }// end visiting all loaded sparse tiles
             }// end visiting all sparse tiles in cur tile-row
             
 			// store C tiles back to global mem
-            #pragma unroll
+            //#pragma unroll
             for (int c=0; c<tm; ++c){
                 if (row_idx*tm+c<spH){
                     mat_c[(row_idx*tm+c)*k+col_idx+lane_id] = res[c];

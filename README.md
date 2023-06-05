@@ -2,8 +2,8 @@
 SpMM: Sparse-dense matrix multiplication
 
 ## Complile
-./compile.sh
+- Run `./compile.sh`
 
 
 ## Run
-./run.sh
+- Run `./run.sh`
