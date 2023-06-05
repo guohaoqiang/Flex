@@ -74,7 +74,7 @@ void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
         //tile_curR_id = __shfl_sync(FULL_MASK, temp_tile_id, 0);
         //tile_nxtR_id = __shfl_sync(FULL_MASK, temp_tile_id, 1);
         tile_curR_id = tileRowPtr[row_idx]; 
-        tile_curR_id = tileRowPtr[row_idx+1]; 
+        tile_nxtR_id = tileRowPtr[row_idx+1]; 
 
         for (int col_idx=warp_id*(32*computeWidth); col_idx<k; col_idx += warps*(32*computeWidth)){  // over C tile columns
              
