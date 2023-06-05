@@ -70,7 +70,8 @@ DataLoader::DataLoader(const std::string& data_path, const int di, bool genXW):d
     gpuA = std::make_unique<dCSR>();
     if (genXW){
         if (alloc()){
-            LOG(INFO) << "Initialize X & W ...";
+            //LOG(INFO) << "Initialize X & W ...";
+            printf("%d of %s, Initialize X & W ...",__LINE__,__FILE__);
             for (int i=0; i<n*dim; ++i){
                 //cpuX[i] = (float)rand()/RAND_MAX;
                 cpuX[i] = 1;
@@ -78,7 +79,7 @@ DataLoader::DataLoader(const std::string& data_path, const int di, bool genXW):d
             for (int i=0; i<c*dim; ++i){
                 cpuW[i] = (float)rand()/RAND_MAX;
             }
-            LOG(INFO) << "X & W initialized ...";
+            //LOG(INFO) << "X & W initialized ...";
             //print_data();
             transfer();
         } 
@@ -86,21 +87,21 @@ DataLoader::DataLoader(const std::string& data_path, const int di, bool genXW):d
 }
 
 bool DataLoader::transfer(){
-    LOG(INFO) << "Transfer A, X & W to gpu ...";
+    //LOG(INFO) << "Transfer A, X & W to gpu ...";
     CUDA_CHECK(cudaMemcpy(gpuA->row, cpuA->row.data(), sizeof(unsigned int)*(cpuA->r+1), cudaMemcpyHostToDevice));
-    LOG(INFO) << "Transfer A row ...";
+    //LOG(INFO) << "Transfer A row ...";
     CUDA_CHECK(cudaMemcpy(gpuA->col, cpuA->col.data(), sizeof(unsigned int)*cpuA->nnz, cudaMemcpyHostToDevice));
-    LOG(INFO) << "Transfer A, col ...";
+    //LOG(INFO) << "Transfer A, col ...";
     CUDA_CHECK(cudaMemcpy(gpuA->vals, cpuA->vals.data(), sizeof(T)*cpuA->nnz, cudaMemcpyHostToDevice));
     
-    LOG(INFO) << "Transfer A, X & W to gpu ...";
+    //LOG(INFO) << "Transfer A, X & W to gpu ...";
     CUDA_CHECK(cudaMemcpy(gpuX, &cpuX[0], sizeof(T)*n*dim, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(gpuW, &cpuW[0], sizeof(T)*dim*c, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(gpuC, 0, sizeof(T)*n*c));
     //CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(T)*n*c));
     CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(T)*n*dim));
     CUDA_CHECK(cudaMemset(gpuRef2, 0, sizeof(T)*n*c));
-    LOG(INFO) << "A, X & W have transfered to gpu ...";
+    //LOG(INFO) << "A, X & W have transfered to gpu ...";
     return true;
 }
 
@@ -136,7 +137,7 @@ bool DataLoader::compare(){
     return true;
 }
 void DataLoader::print_data(){
-    LOG(INFO) << "print start.";
+    //LOG(INFO) << "print start.";
     std::cout<<"The first 5 elements of rowptr: ";
     for(auto it=cpuA->row.begin(); it<cpuA->row.begin()+5; it++)
         std::cout<<(*it)<<" ";

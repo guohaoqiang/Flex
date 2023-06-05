@@ -99,7 +99,7 @@ int run1(DataLoader& input, Metrics& metric){
     CUDA_CHECK( cudaFree(gpuB) );
 
     CUDA_CHECK(cudaMemcpy(&(input.cpuRef1[0]), input.gpuRef1, sizeof(T)*input.n*input.c, cudaMemcpyDeviceToHost));
-    LOG(INFO) << "run1 completed ...";
+    //LOG(INFO) << "run1 completed ...";
     return 0;
 }
 
@@ -202,7 +202,7 @@ int run2(DataLoader& input, Metrics& metric){
     CUDA_CHECK( cudaFree(gpuB) );
 
     CUDA_CHECK(cudaMemcpy(&(input.cpuRef2[0]), input.gpuRef2, sizeof(T)*input.n*input.c, cudaMemcpyDeviceToHost));
-    LOG(INFO) << "run2 completed ...";
+    //LOG(INFO) << "run2 completed ...";
     return 0;
 }
 

@@ -233,7 +233,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (4X4) ...";
+        //LOG(INFO) << "Verify result accuracy (4X4) ...";
+        printf("%d of %s, Verify result accuracy (4X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
@@ -256,7 +257,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (8X4) ...";
+        //LOG(INFO) << "Verify result accuracy (8X4) ...";
+        printf("%d of %s, Verify result accuracy (8X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
@@ -280,7 +282,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (16X4) ...";
+        //LOG(INFO) << "Verify result accuracy (16X4) ...";
+        printf("%d of %s, Verify result accuracy (16X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
@@ -303,7 +306,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (32X4) ...";
+        //LOG(INFO) << "Verify result accuracy (32X4) ...";
+        printf("%d of %s, Verify result accuracy (32X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -326,7 +330,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (64X4) ...";
+        //LOG(INFO) << "Verify result accuracy (64X4) ...";
+        printf("%d of %s, Verify result accuracy (64X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
@@ -349,7 +354,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (128X4) ...";
+        //LOG(INFO) << "Verify result accuracy (128X4) ...";
+        printf("%d of %s, Verify result accuracy (128X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
@@ -372,7 +378,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (256X4) ...";
+        //LOG(INFO) << "Verify result accuracy (256X4) ...";
+        printf("%d of %s, Verify result accuracy (256X4) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -395,7 +402,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (4X8) ...";
+        //LOG(INFO) << "Verify result accuracy (4X8) ...";
+        printf("%d of %s, Verify result accuracy (4X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -418,7 +426,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (8X8) ...";
+        //LOG(INFO) << "Verify result accuracy (8X8) ...";
+        printf("%d of %s, Verify result accuracy (8X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -441,7 +450,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (16X8) ...";
+        //LOG(INFO) << "Verify result accuracy (16X8) ...";
+        printf("%d of %s, Verify result accuracy (16X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -464,7 +474,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (32X8) ...";
+        //LOG(INFO) << "Verify result accuracy (32X8) ...";
+        printf("%d of %s, Verify result accuracy (32X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -487,7 +498,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (64X8) ...";
+        //LOG(INFO) << "Verify result accuracy (64X8) ...";
+        printf("%d of %s, Verify result accuracy (64X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -510,7 +522,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (128X8) ...";
+        //LOG(INFO) << "Verify result accuracy (128X8) ...";
+        printf("%d of %s, Verify result accuracy (128X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -533,7 +546,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (256X8) ...";
+        //LOG(INFO) << "Verify result accuracy (256X8) ...";
+        printf("%d of %s, Verify result accuracy (256X8) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -556,7 +570,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (4X16) ...";
+        //LOG(INFO) << "Verify result accuracy (4X16) ...";
+        printf("%d of %s, Verify result accuracy (4X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -579,7 +594,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (8X16) ...";
+        //LOG(INFO) << "Verify result accuracy (8X16) ...";
+        printf("%d of %s, Verify result accuracy (8X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -602,7 +618,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (16X16) ...";
+        //LOG(INFO) << "Verify result accuracy (16X16) ...";
+        printf("%d of %s, Verify result accuracy (16X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -625,7 +642,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (32X16) ...";
+        //LOG(INFO) << "Verify result accuracy (32X16) ...";
+        printf("%d of %s, Verify result accuracy (32X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -648,7 +666,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (64X16) ...";
+        //LOG(INFO) << "Verify result accuracy (64X16) ...";
+        printf("%d of %s, Verify result accuracy (64X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -671,7 +690,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (128X16) ...";
+        //LOG(INFO) << "Verify result accuracy (128X16) ...";
+        printf("%d of %s, Verify result accuracy (128X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -694,7 +714,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (256X16) ...";
+        //LOG(INFO) << "Verify result accuracy (256X16) ...";
+        printf("%d of %s, Verify result accuracy (256X16) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -717,7 +738,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (4X32) ...";
+        //LOG(INFO) << "Verify result accuracy (4X32) ...";
+        printf("%d of %s, Verify result accuracy (4X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -740,7 +762,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (8X32) ...";
+        //LOG(INFO) << "Verify result accuracy (8X32) ...";
+        printf("%d of %s, Verify result accuracy (8X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -763,7 +786,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (16X32) ...";
+        //LOG(INFO) << "Verify result accuracy (16X32) ...";
+        printf("%d of %s, Verify result accuracy (16X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -786,7 +810,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (32X32) ...";
+        //LOG(INFO) << "Verify result accuracy (32X32) ...";
+        printf("%d of %s, Verify result accuracy (32X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -809,7 +834,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (64X32) ...";
+        //LOG(INFO) << "Verify result accuracy (64X32) ...";
+        printf("%d of %s, Verify result accuracy (64X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -832,7 +858,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (128X32) ...";
+        //LOG(INFO) << "Verify result accuracy (128X32) ...";
+        printf("%d of %s, Verify result accuracy (128X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -855,7 +882,8 @@ void run(DataLoader& input){
     
         // verify results
         int count = 0;
-        LOG(INFO) << "Verify result accuracy (256X32) ...";
+        //LOG(INFO) << "Verify result accuracy (256X32) ...";
+        printf("%d of %s, Verify result accuracy (256X32) ...\n",__LINE__,__FILE__);
         for (size_t i=0; i<input.n; ++i){
             for (size_t j=0; j<input.dim; ++j){
                 if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
@@ -1207,7 +1235,8 @@ void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
 	//dim3 grid(data.block_tileStart_idx.size()-1, (data.k+31)/32);
     //printf("@415:   data.block_tileStart_idx.size() = %d\n",data.block_tileStart_idx.size());
     //printf("@416:   data.k = %d\n",data.k);
-    LOG(INFO) << "Ahead the kernel ...";
+    //LOG(INFO) << "Ahead the kernel ...";
+    printf("%d of %s, Ahead the kernel ...\n",__LINE__,__FILE__);
     //std::cout<<"block_tileStart_idx:"<<std::endl;
     //print(block_tileStart_idx);
     //std::cout<<"warp_tileRow_idx:"<<std::endl;
@@ -1286,10 +1315,12 @@ void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
     cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
     elap_t += spgemm_duration; 
     cudaDeviceSynchronize(); 
-    LOG(INFO) << "After the kernel ...";
+    //LOG(INFO) << "After the kernel ...";
+    printf("%d of %s, After the kernel ...\n",__LINE__,__FILE__);
 
     // transfer data to host
-    LOG(INFO) << "Transfer results back ...";
+    //LOG(INFO) << "Transfer results back ...";
+    printf("%d of %s, Transfer results back ...\n",__LINE__,__FILE__);
 	cudaMemcpy(h_res_c, d_mat_c, data.m*data.k*sizeof(float), cudaMemcpyDeviceToHost);
     
     float t = elap_t*(1e-3)/10;

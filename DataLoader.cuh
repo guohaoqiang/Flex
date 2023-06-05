@@ -1,6 +1,6 @@
 #ifndef DATALOADER_H
 #define DATALOADER_H 
-#include <glog/logging.h>
+//#include <glog/logging.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>

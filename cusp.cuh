@@ -1,6 +1,6 @@
 #ifndef CUSP_H
 #define CUSP_H 
-#include <glog/logging.h>
+//#include <glog/logging.h>
 #include "common.h"
 #include "DataLoader.cuh"
 #define T float

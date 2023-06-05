@@ -10,10 +10,10 @@ CUDA_LINK_LIBS= -lcudart -lcusparse -lcublas
 CXX = g++
 #INC_FLAGS := -I/home/grads/ghaoqi1/opt/glog/build -I/home/grads/ghaoqi1/opt/glog/src -I/home/grads/ghaoqi1/opt/gflags/build/include
 #LIB_FLAGS := -L/home/grads/ghaoqi1/opt/glog/build -L/home/grads/ghaoqi1/opt/gflags/build/lib 
-INC_FLAGS := -I./glog/build -I./glog/src -I./gflags/build/include
-LIB_FLAGS := -L./glog/build -L./gflags/build/lib 
+#INC_FLAGS := -I./glog/build -I./glog/src -I./gflags/build/include
+#LIB_FLAGS := -L./glog/build -L./gflags/build/lib 
 CXXFLAGS = -std=c++14 -O2
-CXX_LINK_FLAGS = -lglog -lgflags -lpthread
+CXX_LINK_FLAGS = -lpthread
 WARN_FLAGS = -g -Wall -Wextra -Wabi -Wctor-dtor-privacy -Wnon-virtual-dtor -Wreorder -Wstrict-null-sentinel -Woverloaded-virtual -Wshadow -Wcast-align -Wpointer-arith -Wwrite-strings -Wundef -Wredundant-decls
 
 NVXX = nvcc
@@ -47,15 +47,15 @@ test:
 	@echo ${CU_OBJECTS}
 
 flex: $(CC_OBJECTS) $(CU_OBJECTS)
-	$(CXX) -o $@ $^ $(CXX_LINK_FLAGS) $(WARN_FLAGS) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS) $(LIB_FLAGS)
+	$(CXX) -o $@ $^ $(CXX_LINK_FLAGS) $(WARN_FLAGS) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS)
 	#$(CXX) -o $@ $^ $(CXX_LINK_FLAGS) $(NVXXFLAGS) $(WARN_FLAGS) $(CUDA_INC_DIR) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS) $(LIB_FLAGS)
 
 $(OBJ)/%.cc.o: $(SRC)/%.cc $(INC)/%.h
-	$(CXX) -c $< -o $@ $(WARN_FLAGS) $(CXXFLAGS) $(INC_FLAGS) $(CUDA_INC_DIR)
+	$(CXX) -c $< -o $@ $(WARN_FLAGS) $(CXXFLAGS) $(CUDA_INC_DIR)
 	#$(CXX) -c $< -o $@ $(WARN_FLAGS) $(CXXFLAGS) $(CXX_LINK_FLAGS) $(INC_FLAGS) $(LIB_FLAGS) $(CUDA_INC_DIR) $(CUDA_LIB_DIR)
 
 $(OBJ)/%.cu.o: $(SRC)/%.cu $(INC)/%.cuh
-	$(NVXX) -c $< -o $@ $(INC_FLAGS) $(NVXXFLAGS)
+	$(NVXX) -c $< -o $@ $(NVXXFLAGS)
 	#$(NVXX) -c $< -o $@ $(NVXXFLAGS) $(NVXX_LINK_FLAGS) $(INC_FLAGS) $(LIB_FLAGS) $(CXX_LINK_FLAGS) $(CUDA_LIB_DIR) $(CUDA_INC_DIR)
 
 

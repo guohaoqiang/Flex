@@ -3,8 +3,8 @@
 #include <iostream>
 #include <string>
 #include <memory>
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+//#include <gflags/gflags.h>
+//#include <glog/logging.h>
 #include "DataLoader.cuh"
 #include "common.h"
 #include "cusp.cuh"

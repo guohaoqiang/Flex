@@ -1,14 +1,15 @@
 #include "main.h"
 //#define AXW 1
-DEFINE_string(input, "./data/cora.csv", "The name of benchmarks.");
-DEFINE_int32(dim, 32, "The dims of output.");
-DEFINE_bool(cmp, true, "Compare results");
+//DEFINE_string(input, "./data/cora.csv", "The name of benchmarks.");
+//DEFINE_int32(dim, 32, "The dims of output.");
+//DEFINE_bool(cmp, true, "Compare results");
 
 int main(int argc, char *argv[])
 {
-    gflags::ParseCommandLineFlags(&argc, &argv, true);
-    VLOG(2)<<"Loading bench config....";
-    DataLoader data(FLAGS_input, FLAGS_dim);
+    //gflags::ParseCommandLineFlags(&argc, &argv, true);
+    //VLOG(2)<<"Loading bench config....";
+    //DataLoader data(FLAGS_input, FLAGS_dim);
+    DataLoader data(argv[1], atoi(argv[2]));
     std::cout<<"Graph name: "<<data.graph_name<<std::endl;
     std::cout<<"A: "<<data.cpuA->r<<"*"<<data.cpuA->c<<"  X: "<<data.n<<"*"<<data.dim<<"   W: "<<data.dim<<"*"<<data.c<<std::endl;
     std::cout<<"NNZ of A: "<<data.cpuA->nnz<<std::endl;
