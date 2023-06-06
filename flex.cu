@@ -36,7 +36,7 @@ void ldg64(int &reg0, int &reg1, const uint32_t &addr) {
 // B: dense, n * k   (k << n)
 template<int tm, int tn, int warps>
 __global__
-void flexspgemm_cuda_wo_pre_v4(int* tileRowPtr,
+void flexspmm_cuda_wo_pre_v4(int* tileRowPtr,
                 int* nnzPtr,
                 int* nnz,
                 int* bitMap,
@@ -169,6 +169,22 @@ void run_test(float* h_res_c, DataLoader& input,
 
 }
 */
+GPU_Info
+print_gpu_and_kernel_info()
+{
+   GPU_Info info;
+
+   gpu_info_print();
+
+   // Choose GPU 0 because it's usually the better choice.
+   //
+   int dev = gpu_choose_index();
+   CE(cudaSetDevice(dev));
+   printf("Using GPU %d\n",dev);
+   info.get_gpu_info(dev);
+
+   return info;
+}   
 struct tileConf {
     const int tm, tn;
 };
@@ -196,6 +212,9 @@ void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const i
         memset(h_res, 0, n*m*sizeof(float));
 }
 void run(DataLoader& input){
+
+    NPerf_init();
+    GPU_Info info = print_gpu_and_kernel_info();
     Perfs perfRes;
     
     // ------------ run baseline cuspgemm ----------------
@@ -238,13 +257,17 @@ void run(DataLoader& input){
     vector<mat> spMats;
     
     #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
-     { const int idx = kernels.size(); \
-       kernels.emplace_back(info.GET_INFO((k)),#k,sidx,0,nbx,nby,nt); }
+     {  const int idx = kernels.size(); \
+        kernels.emplace_back(info.GET_INFO((k)),#k,sidx,nbx,nby,nt); }
 
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt) \                                                                                     
-    { EXAMINE_KERNEL((k<tileConfs[sidx][0],tileConfs[sidx][1],4>), sidx, nbx, nby, nt);
-      spMats.emplace_back(mat(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz, tileConfs[sidx][0],tileConfs[sidx][1]));
-    }
+     {  const int idx = kernels.size(); \
+        spMats.emplace_back(mat(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz, tileConfs[sidx].tm,tileConfs[sidx].tn)); \
+        EXAMINE_KERNEL((k<tileConfs[sidx].tm,tileConfs[sidx].tn,4>), sidx, nbx, nby, nt); }
+// NBX,NBY,NT are useless currently
+#define NBX 1
+#define NBY 1
+#define NT 1
 #ifdef CUBE4X4
     {        
         SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 0, NBX, NBY, NT);
@@ -317,7 +340,7 @@ void run(DataLoader& input){
 #endif
 #ifdef RECT4X16
     {
-        SPECIFY_KERNEL(flexspmm, 14, NBX, NBY, NT);
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 14, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT8X16
@@ -478,12 +501,21 @@ void run(DataLoader& input){
         //std::cout<<"warp_tileRow_idx:"<<std::endl;
         //print(warp_tileRow_idx);
         
-        int gridx = (spMats[id].m+tm-1)/tm;
         //int gridx = 4096;
         int threads = 128;
 
         Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
-        typedef void (*KPtr)();
+        typedef void (*KPtr)(int* tileRowPtr,
+                            int* nnzPtr,
+                            int* nnz,
+                            int* bitMap,
+                            int* tileLeftCol,
+				            int* rcOffset,
+				            float* vals,
+				            int spH,
+				            float* mat_b,
+				            int k,
+                            float* mat_c);
         
         float spgemm_duration;
         float elap_t = 0; 
@@ -491,18 +523,20 @@ void run(DataLoader& input){
         cudaEventCreate(&spgemm_start);
         cudaEventCreate(&spgemm_stop);
         cudaEventRecord(spgemm_start);
-        for ( NPerf_data_reset(); NPerf_need_run_get(); )
-            KPtr(ki->func_ptr)<<<gridx,threads>>>(d_tileRowPtr, 
-                               d_tileNnz, 
-                               d_nnzTile,
-                               d_bitMap,
-                               d_tileColIdx,
-                               d_rcOffset, 
-                               d_vals, 
-                               data.m,
-                               d_mat_b, 
-                               data.k, 
+        for ( NPerf_data_reset(); NPerf_need_run_get(); ){
+            int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
+            KPtr(ki->func_ptr)<<<gridx,threads>>>(d_tileRowPtr,\ 
+                               d_tileNnz, \
+                               d_nnzTile, \
+                               d_bitMap, \
+                               d_tileColIdx, \
+                               d_rcOffset, \
+                               d_vals, \
+                               spMats[id].m,\
+                               d_mat_b,\ 
+                               spMats[id].k, \
                                d_mat_c);
+        }
         cudaEventRecord(spgemm_stop);
         cudaEventSynchronize(spgemm_stop);
         cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
@@ -515,7 +549,7 @@ void run(DataLoader& input){
         //LOG(INFO) << "Transfer results back ...";
         printf("%d of %s, Transfer results back ...\n",__LINE__,__FILE__);
         cudaMemcpy(h_res_c, d_mat_c, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyDeviceToHost);
-        resCheck(h_ref_c, h_res_c, spMats[id].n, spMats[id].dim, perfRes, spMats[id].tm, spMats[id].tn);
+        resCheck(h_ref_c, h_res_c, spMats[id].n, spMats[id].k, perfRes, spMats[id].tm, spMats[id].tn);
         
         float t = elap_t*(1e-3)/10;
         perfRes.flex_spgemm_time.push_back(t);
