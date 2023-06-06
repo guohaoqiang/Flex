@@ -1,11 +1,20 @@
+GP_ROOT = ../../gp
+NP_ROOT = $(GP_ROOT)/lib
+
 # CUDA directory:
 CUDA_ROOT_DIR=/usr/local/cuda
 # CUDA library directory:
 CUDA_LIB_DIR= -L$(CUDA_ROOT_DIR)/lib64
 # CUDA include directory:
-CUDA_INC_DIR= -I$(CUDA_ROOT_DIR)/include
+CUDA_INC_DIR= -I$(GP_ROOT)/include -I$(CUDA_ROOT_DIR)/include
 # CUDA linking libraries:
 CUDA_LINK_LIBS= -lcudart -lcusparse -lcublas
+
+LIBRARIES =
+ifneq ($(MAKECMDGOALS),clean)
+  DUMMY:= $(shell $(MAKE) -C $(NP_ROOT))
+  LIBRARIES += $(shell $(NP_ROOT)/ld-flags)
+endif
 
 CXX = g++
 #INC_FLAGS := -I/home/grads/ghaoqi1/opt/glog/build -I/home/grads/ghaoqi1/opt/glog/src -I/home/grads/ghaoqi1/opt/gflags/build/include
@@ -25,8 +34,10 @@ NVXX = nvcc
 #NVXXFLAGS = -arch sm_89
 # Hopper: H100
 NVXXFLAGS = -arch sm_90
+CUFLAGS = $(shell $(NP_ROOT)/cc-flags)
 #NVXX_LINK_FLAGS = -lcusparse -lcublas -lcudart
 
+SASS_FILTER = $(GP_ROOT)/util/sass-filter --show-source-code
 
 SRC = .
 CPP_SRC = ${SRC}/cpp
@@ -47,7 +58,7 @@ test:
 	@echo ${CU_OBJECTS}
 
 flex: $(CC_OBJECTS) $(CU_OBJECTS)
-	$(CXX) -o $@ $^ $(CXX_LINK_FLAGS) $(WARN_FLAGS) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS)
+	$(CXX) $(CUFLAGS) -o $@ $^ $(CXX_LINK_FLAGS) $(WARN_FLAGS) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS) $(LIBRARIES)
 	#$(CXX) -o $@ $^ $(CXX_LINK_FLAGS) $(NVXXFLAGS) $(WARN_FLAGS) $(CUDA_INC_DIR) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS) $(LIB_FLAGS)
 
 $(OBJ)/%.cc.o: $(SRC)/%.cc $(INC)/%.h
@@ -55,7 +66,7 @@ $(OBJ)/%.cc.o: $(SRC)/%.cc $(INC)/%.h
 	#$(CXX) -c $< -o $@ $(WARN_FLAGS) $(CXXFLAGS) $(CXX_LINK_FLAGS) $(INC_FLAGS) $(LIB_FLAGS) $(CUDA_INC_DIR) $(CUDA_LIB_DIR)
 
 $(OBJ)/%.cu.o: $(SRC)/%.cu $(INC)/%.cuh
-	$(NVXX) -c $< -o $@ $(NVXXFLAGS)
+	$(NVXX) $(CUFLAGS) -c $< -o $@ $(NVXXFLAGS) $(LIBRARIES)
 	#$(NVXX) -c $< -o $@ $(NVXXFLAGS) $(NVXX_LINK_FLAGS) $(INC_FLAGS) $(LIB_FLAGS) $(CXX_LINK_FLAGS) $(CUDA_LIB_DIR) $(CUDA_INC_DIR)
 
 

@@ -2,11 +2,13 @@
 #define FLEX_H 
 #include <iostream>
 #include <fstream>
+#include <gp/cuda-gpuinfo.h>
+#include <nperf.h>
 #include "common.h"
 #include "DataLoader.cuh"
 #include "mat.h"
 #include "flex_spmm.cuh"
-#define OUTPUTCSV
+//#define OUTPUTCSV
 
 
 #define CUBE4X4

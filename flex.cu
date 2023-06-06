@@ -169,6 +169,32 @@ void run_test(float* h_res_c, DataLoader& input,
 
 }
 */
+struct tileConf {
+    const int tm, tn;
+};
+constexpr tileConf tileConfs[] = 
+    { {4,4},{8,4},{16,4},{32,4},{64,4},{128,4},{256,4}
+     ,{4,8},{8,8},{16,8},{32,8},{64,8},{128,8},{256,8}
+     ,{4,16},{8,16},{16,16},{32,16},{64,16},{128,16},{256,16}
+     ,{4,32},{8,32},{16,32},{32,32},{64,32},{128,32},{256,32}
+    };
+void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const int tm, const int tn){
+        // verify results
+        int count = 0;
+        std::cout<<"Verify result accuracy ("<< to_string(tm) << "X" << to_string(tn) << ") ... " <<std::endl; 
+        for (int i=0; i<m; ++i){
+            for (int j=0; j<n; ++j){
+                if (abs(h_gold[i*n+j]-h_res[i*n+j])>=0.01){
+                    count++;
+                    //if (j==0) 
+                    //    std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
+                }
+            }
+        }
+        perfRes.flex_spgemm_errors.push_back(count);
+        std::cout<<"Kernel ("<< to_string(tm) << "X" << to_string(tn) << ") errs: " << count<<std::endl;
+        memset(h_res, 0, n*m*sizeof(float));
+}
 void run(DataLoader& input){
     Perfs perfRes;
     
@@ -197,682 +223,332 @@ void run(DataLoader& input){
     //vector<vector<int>> mnk = {{16,16,16},{32,8,16},{8,32,16}};
 
     float* h_res_c = (float*)malloc(input.n*input.dim*sizeof(float)); 
-    int warmup = 5;
-    int runs = 10;
-#ifdef CUBE4X4
-    {
-        mat<4,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-	    //data.print2();
-        flexspgemm<mat<4,4>, 4, 4>(h_res_c, data, host_mat_b, perfRes);
+    struct App_Kernel_Info {
+         App_Kernel_Info  
+         (Kernel_Info& k,const char *name, int i, int nbx, int nby, int nt):
+           k_ptr(k.func_ptr),name_base(name),
+           shape_idx{i},
+           n_threads{nt},n_blocks_x{nbx},n_blocks_y{nby}{}
+        GPU_Info_Func k_ptr;
+        const char *name_base;
+        const int shape_idx;
+        const int n_blocks_x, n_blocks_y, n_threads;
+    };  
+    vector<App_Kernel_Info> kernels;
+    vector<mat> spMats;
     
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (4X4) ...";
-        printf("%d of %s, Verify result accuracy (4X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
-                    count++;
-                    //if (j==0) 
-                    //    std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@246:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+    #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
+     { const int idx = kernels.size(); \
+       kernels.emplace_back(info.GET_INFO((k)),#k,sidx,0,nbx,nby,nt); }
+
+    #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt) \                                                                                     
+    { EXAMINE_KERNEL((k<tileConfs[sidx][0],tileConfs[sidx][1],4>), sidx, nbx, nby, nt);
+      spMats.emplace_back(mat(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz, tileConfs[sidx][0],tileConfs[sidx][1]));
+    }
+#ifdef CUBE4X4
+    {        
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 0, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT8X4
     {
-        mat<8,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<8,4>, 8, 4>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (8X4) ...";
-        printf("%d of %s, Verify result accuracy (8X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@269:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 1, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT16X4
     {
-        mat<16,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        //data.print2();
-        flexspgemm<mat<16,4>, 16, 4>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (16X4) ...";
-        printf("%d of %s, Verify result accuracy (16X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
-                    count++;
-                    //if (j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@293:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 2, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT32X4
     {
-        mat<32,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<32,4>, 32, 4>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (32X4) ...";
-        printf("%d of %s, Verify result accuracy (32X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@316:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 3, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT64X4
     {
-        mat<64,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<64,4>, 64, 4>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (64X4) ...";
-        printf("%d of %s, Verify result accuracy (64X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@339:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 4, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT128X4
     {
-        mat<128,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<128,4>, 128, 4>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (128X4) ...";
-        printf("%d of %s, Verify result accuracy (128X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.01){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@362:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 5, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT256X4
     {
-        mat<256,4> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<256,4>, 256, 4>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (256X4) ...";
-        printf("%d of %s, Verify result accuracy (256X4) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@385:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 6, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT4X8
     {
-        mat<4,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<4,8>, 4, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (4X8) ...";
-        printf("%d of %s, Verify result accuracy (4X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@408:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 7, NBX, NBY, NT);
     }
 #endif
 #ifdef CUBE8X8
     {
-        mat<8,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<8,8>, 8, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (8X8) ...";
-        printf("%d of %s, Verify result accuracy (8X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@431:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 8, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT16X8
     {
-        mat<16,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<16,8>, 16, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (16X8) ...";
-        printf("%d of %s, Verify result accuracy (16X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@454:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 9, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT32X8
     {
-        mat<32,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<32,8>, 32, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (32X8) ...";
-        printf("%d of %s, Verify result accuracy (32X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@477:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 10, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT64X8
     {
-        mat<64,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<64,8>, 64, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (64X8) ...";
-        printf("%d of %s, Verify result accuracy (64X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@500:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 11, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT128X8
     {
-        mat<128,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<128,8>, 128, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (128X8) ...";
-        printf("%d of %s, Verify result accuracy (128X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@523:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 12, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT256X8
     {
-        mat<256,8> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<256,8>, 256, 8>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (256X8) ...";
-        printf("%d of %s, Verify result accuracy (256X8) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@546:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 13, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT4X16
     {
-        mat<4,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<4,16>, 4, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (4X16) ...";
-        printf("%d of %s, Verify result accuracy (4X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@569:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm, 14, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT8X16
     {
-        mat<8,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<8,16>, 8, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (8X16) ...";
-        printf("%d of %s, Verify result accuracy (8X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@592:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 15, NBX, NBY, NT);
     }
 #endif
 #ifdef CUBE16X16
     {
-        mat<16,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<16,16>, 16, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (16X16) ...";
-        printf("%d of %s, Verify result accuracy (16X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@615:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 16, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT32X16
     {
-        mat<32,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<32,16>, 32, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (32X16) ...";
-        printf("%d of %s, Verify result accuracy (32X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@638:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 17, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT64X16
     {
-        mat<64,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<64,16>, 64, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (64X16) ...";
-        printf("%d of %s, Verify result accuracy (64X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@661:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 18, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT128X16
     {
-        mat<128,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<128,16>, 128, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (128X16) ...";
-        printf("%d of %s, Verify result accuracy (128X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@684:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 19, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT256X16
     {
-        mat<256,16> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<256,16>, 256, 16>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (256X16) ...";
-        printf("%d of %s, Verify result accuracy (256X16) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@661:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 20, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT4X32
     {
-        mat<4,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<4,32>, 4, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (4X32) ...";
-        printf("%d of %s, Verify result accuracy (4X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@730:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 21, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT8X32
     {
-        mat<8,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<8,32>, 8, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (8X32) ...";
-        printf("%d of %s, Verify result accuracy (8X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@753:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 22, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT16X32
     {
-        mat<16,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<16,32>, 16, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (16X32) ...";
-        printf("%d of %s, Verify result accuracy (16X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@776:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 23, NBX, NBY, NT);
     }
 #endif
 #ifdef CUBE32X32
     {
-        mat<32,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<32,32>, 32, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (32X32) ...";
-        printf("%d of %s, Verify result accuracy (32X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@799:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 24, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT64X32
     {
-        mat<64,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<64,32>, 64, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (64X32) ...";
-        printf("%d of %s, Verify result accuracy (64X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@822:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 25, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT128X32
     {
-        mat<128,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<128,32>, 128, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (128X32) ...";
-        printf("%d of %s, Verify result accuracy (128X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@845:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 26, NBX, NBY, NT);
     }
 #endif
 #ifdef RECT256X32
     {
-        mat<256,32> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	    data.csr2tile();
-        flexspgemm<mat<256,32>, 256, 32>(h_res_c, data, host_mat_b, perfRes);
-    
-        // verify results
-        int count = 0;
-        //LOG(INFO) << "Verify result accuracy (256X32) ...";
-        printf("%d of %s, Verify result accuracy (256X32) ...\n",__LINE__,__FILE__);
-        for (size_t i=0; i<input.n; ++i){
-            for (size_t j=0; j<input.dim; ++j){
-                if (abs(h_ref_c[i*input.dim+j]-h_res_c[i*input.dim+j])>=0.001){
-                    count++;
-                    //if (i<8 && j==0) 
-                    //std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_ref_c[i*input.dim+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res_c[i*input.dim+j]<<std::endl;
-                }
-            }
-        }
-        perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"@868:   Wrong results: "<<count<<std::endl;
-        memset(h_res_c, 0, input.n*input.dim*sizeof(float));
+        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 27, NBX, NBY, NT);
     }
 #endif
+
+    for( int id=0; id<kernels.size(); ++id){
+        spMats[id].csr2tile();
+        // allocate device memory
+        // index of the first nz entry in each tile, length = #tiles+1
+        int* d_tileNnz; 
+        CHECK_CUDA(cudaMalloc(&d_tileNnz, spMats[id].nnzPtr.size()*sizeof(int)));
+        
+#ifdef V3_KERNEL
+        // index of the first tile for each thread block, length = #blocks+1
+        int* d_block_tileStart_idx; 
+        CHECK_CUDA(cudaMalloc(&d_block_tileStart_idx, spMats[id].block_tileStart_idx.size()*sizeof(int)));
+        
+        // row index of tiles for each thread block, length = #blocks
+        int* d_warp_tileRow_idx; 
+        CHECK_CUDA(cudaMalloc(&d_warp_tileRow_idx, spMats[id].warp_tileRow_idx.size()*sizeof(int)));
+        
+        // row&col index of vals in sparse matrix, length = nnz
+        char* d_r_c_Offset; 
+        CHECK_CUDA(cudaMalloc(&d_r_c_Offset, spMats[id].rc_Offset.size()*sizeof(char)));
+#endif
+        // column index of tiles, length = #tiles
+        int* d_tileColIdx; 
+        CHECK_CUDA(cudaMalloc(&d_tileColIdx, spMats[id].tileLeftColIdx.size()*sizeof(int)));
+          
+        // non-zero vals of sparse matrix, length = nnz
+        float* d_vals; 
+        CHECK_CUDA(cudaMalloc(&d_vals, spMats[id].newVals.size()*sizeof(int)));
+       
+
+        // v4 kernel
+        int* d_tileRowPtr; 
+        CHECK_CUDA(cudaMalloc(&d_tileRowPtr, spMats[id].tileRowPtr.size()*sizeof(int)));
+        //std::cout<<"@536: metaTile.size() = "<<data.metaTile.size()<<std::endl;
+        int* d_nnzTile; 
+        CHECK_CUDA(cudaMalloc(&d_nnzTile, spMats[id].nnzTile.size()*sizeof(int)));
+        int* d_bitMap; 
+        CHECK_CUDA(cudaMalloc(&d_bitMap, spMats[id].bitMap.size()*sizeof(int)));
+        int* d_rcOffset; 
+        CHECK_CUDA(cudaMalloc(&d_rcOffset, spMats[id].rcOffset.size()*sizeof(int)));
+        //std::cout<<"@539: rcOffset.size() = "<<data.rcOffset.size()<<std::endl;
+
+        //data.print2();
+
+        /*
+        // Matrix B
+        float* mat_b = (float*)malloc(data.m*data.k*sizeof(float));
+        for (size_t i=0; i<data.m; ++i){
+            for (size_t j=0; j<data.k; ++j){
+                mat_b[i*data.k+j] = 1.0;
+            }
+        }
+        */
+        float* d_mat_b; 
+        CHECK_CUDA(cudaMalloc(&d_mat_b, spMats[id].m*spMats[id].k*sizeof(float)));
+        
+        // Matrix C
+        float* d_mat_c; 
+        CHECK_CUDA(cudaMalloc(&d_mat_c, spMats[id].m*spMats[id].k*sizeof(float)));
+        cudaMemset(d_mat_c, 0.0, spMats[id].m*spMats[id].k*sizeof(float));
+        cudaDeviceSynchronize(); 
+        
+        
+        // transfer data to device
+        cudaMemcpy(d_tileNnz, spMats[id].nnzPtr.data(), spMats[id].nnzPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_tileColIdx, spMats[id].tileLeftColIdx.data(), spMats[id].tileLeftColIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
+#ifdef V3_KERNEL
+        cudaMemcpy(d_block_tileStart_idx, spMats[id].block_tileStart_idx.data(), spMats[id].block_tileStart_idx.size()*sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_warp_tileRow_idx, spMats[id].warp_tileRow_idx.data(), spMats[id].warp_tileRow_idx.size()*sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_r_c_Offset, spMats[id].rc_Offset.data(), spMats[id].rc_Offset.size()*sizeof(char), cudaMemcpyHostToDevice);
+#endif
+        cudaMemcpy(d_vals, spMats[id].newVals.data(), spMats[id].newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_mat_b, host_mat_b, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyHostToDevice);
+        //cudaMemcpy(d_mat_c, mat_c, data.m*data.k*sizeof(float), cudaMemcpyHostToDevice);
+
+        // v4 kernel
+        cudaMemcpy(d_tileRowPtr, spMats[id].tileRowPtr.data(), spMats[id].tileRowPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_nnzTile, spMats[id].nnzTile.data(), spMats[id].nnzTile.size()*sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_bitMap, spMats[id].bitMap.data(), spMats[id].bitMap.size()*sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_rcOffset, spMats[id].rcOffset.data(), spMats[id].rcOffset.size()*sizeof(int), cudaMemcpyHostToDevice);
+        
+
+        // each thread block has 2 warps
+        //dim3 grid(data.block_tileStart_idx.size()-1, (data.k+31)/32);
+        //printf("@415:   data.block_tileStart_idx.size() = %d\n",data.block_tileStart_idx.size());
+        //printf("@416:   data.k = %d\n",data.k);
+        //LOG(INFO) << "Ahead the kernel ...";
+        printf("%d of %s, Ahead the kernel ...\n",__LINE__,__FILE__);
+        //std::cout<<"block_tileStart_idx:"<<std::endl;
+        //print(block_tileStart_idx);
+        //std::cout<<"warp_tileRow_idx:"<<std::endl;
+        //print(warp_tileRow_idx);
+        
+        int gridx = (spMats[id].m+tm-1)/tm;
+        //int gridx = 4096;
+        int threads = 128;
+
+        Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
+        typedef void (*KPtr)();
+        
+        float spgemm_duration;
+        float elap_t = 0; 
+        cudaEvent_t spgemm_start, spgemm_stop;
+        cudaEventCreate(&spgemm_start);
+        cudaEventCreate(&spgemm_stop);
+        cudaEventRecord(spgemm_start);
+        for ( NPerf_data_reset(); NPerf_need_run_get(); )
+            KPtr(ki->func_ptr)<<<gridx,threads>>>(d_tileRowPtr, 
+                               d_tileNnz, 
+                               d_nnzTile,
+                               d_bitMap,
+                               d_tileColIdx,
+                               d_rcOffset, 
+                               d_vals, 
+                               data.m,
+                               d_mat_b, 
+                               data.k, 
+                               d_mat_c);
+        cudaEventRecord(spgemm_stop);
+        cudaEventSynchronize(spgemm_stop);
+        cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
+        elap_t += spgemm_duration; 
+        cudaDeviceSynchronize(); 
+        //LOG(INFO) << "After the kernel ...";
+        printf("%d of %s, After the kernel ...\n",__LINE__,__FILE__);
+
+        // transfer data to host
+        //LOG(INFO) << "Transfer results back ...";
+        printf("%d of %s, Transfer results back ...\n",__LINE__,__FILE__);
+        cudaMemcpy(h_res_c, d_mat_c, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyDeviceToHost);
+        resCheck(h_ref_c, h_res_c, spMats[id].n, spMats[id].dim, perfRes, spMats[id].tm, spMats[id].tn);
+        
+        float t = elap_t*(1e-3)/10;
+        perfRes.flex_spgemm_time.push_back(t);
+        
+        //std::cout<<"Flexspgemm time: "<<t<<" s "<<std::endl;
+        float gflops = (2*spMats[id].newVals.size()*spMats[id].k)/(1e+9);
+        perfRes.flex_spgemm_throughput.push_back(gflops/t);
+        //std::cout<<"Flexspgemm Throughput: "<<gflops/t<<" gflops/s "<<std::endl;
+        float gb = (float)((spMats[id].nnzPtr.size()+spMats[id].block_tileStart_idx.size()
+                +spMats[id].warp_tileRow_idx.size()+spMats[id].tileColIdx.size()
+                +spMats[id].tileLeftColIdx.size()+spMats[id].newVals.size()+2*spMats[id].m*spMats[id].k)*4+spMats[id].rc_Offset.size())/(1e+9);
+        perfRes.flex_spgemm_bandwidth.push_back(gb/t);
+        //std::cout<<"Flexspgemm Bandwidth: "<<gb/t<<" GB/s "<<std::endl;
+        
+        CHECK_CUDA(cudaFree(d_tileNnz));
+#ifdef V3_KERNEL
+        CHECK_CUDA(cudaFree(d_block_tileStart_idx));
+        CHECK_CUDA(cudaFree(d_warp_tileRow_idx));
+        CHECK_CUDA(cudaFree(d_r_c_Offset));
+#endif
+        CHECK_CUDA(cudaFree(d_tileColIdx));
+        CHECK_CUDA(cudaFree(d_vals));
+        CHECK_CUDA(cudaFree(d_mat_b));
+        CHECK_CUDA(cudaFree(d_mat_c));
+        
+        // v4 kernel
+        CHECK_CUDA(cudaFree(d_tileRowPtr));
+        CHECK_CUDA(cudaFree(d_nnzTile));
+        CHECK_CUDA(cudaFree(d_bitMap));
+        CHECK_CUDA(cudaFree(d_rcOffset));
+
+    }
+
     free(h_res_c);
     free(h_ref_c);
     free(host_mat_b);
@@ -1123,10 +799,12 @@ void run(DataLoader& input){
     myfile.close(); 
 #endif
 }
+/*
+temate<int tm, int tn>
+void flexspmm(float* h_res_c, DataLoader& input, const float* mat_b, Perfs& perfRes){
 
-template<typename MT, int tm, int tn>
-void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
-
+    mat<tm,tn> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
+	data.csr2tile();
 	// allocate device memory
     // index of the first nz entry in each tile, length = #tiles+1
     int* d_tileNnz; 
@@ -1168,15 +846,15 @@ void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
 
 	//data.print2();
 
-    /*
+    
     // Matrix B
-    float* mat_b = (float*)malloc(data.m*data.k*sizeof(float));
-    for (size_t i=0; i<data.m; ++i){
-        for (size_t j=0; j<data.k; ++j){
-            mat_b[i*data.k+j] = 1.0;
-        }
-    }
-    */
+    //float* mat_b = (float*)malloc(data.m*data.k*sizeof(float));
+    //for (size_t i=0; i<data.m; ++i){
+    //    for (size_t j=0; j<data.k; ++j){
+    //        mat_b[i*data.k+j] = 1.0;
+    //    }
+    //}
+    
     float* d_mat_b; 
 	CHECK_CUDA(cudaMalloc(&d_mat_b, data.m*data.k*sizeof(float)));
     
@@ -1220,21 +898,22 @@ void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
     int gridx = (data.m+tm-1)/tm;
     //int gridx = 4096;
     int threads = 128;
+
     // warm up
     for (int i=0; i<5; ++i){
-     /*
+     
         //flexspgemm_cuda_reg_pre_v2<<<grid, 64>>>(d_tileNnz, 
-        flexspgemm_cuda_wo_pre_v3<<<grid, 64>>>(d_tileNnz,
-                                                d_block_tileStart_idx, 
-                                                d_warp_tileRow_idx, 
-                                                d_tileColIdx, 
-                                                data.tileLeftColIdx.size(), 
-                                                d_r_c_Offset, 
-                                                d_vals, 
-                                                data.k, 
-                                                d_mat_b, 
-                                                d_mat_c);
-       */ 
+        //flexspgemm_cuda_wo_pre_v3<<<grid, 64>>>(d_tileNnz,
+        //                                        d_block_tileStart_idx, 
+        //                                        d_warp_tileRow_idx, 
+        //                                        d_tileColIdx, 
+        //                                        data.tileLeftColIdx.size(), 
+        //                                        d_r_c_Offset, 
+        //                                        d_vals, 
+        //                                        data.k, 
+        //                                        d_mat_b, 
+        //                                        d_mat_c);
+        
         flexspgemm_cuda_wo_pre_v4<tm, tn, 4><<<gridx,threads>>>(d_tileRowPtr, 
                                                              d_tileNnz, 
                                                              d_nnzTile,
@@ -1257,19 +936,19 @@ void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
     cudaEventRecord(spgemm_start);
     for (int i=0; i<10; ++i){
         //std::cout<<"@618 -----------------------   i = "<<i<<" gridx = "<<gridx<<std::endl;
-        /*
+        
         //flexspgemm_cuda_reg_pre_v2<<<grid, 64>>>(d_tileNnz,
-        flexspgemm_cuda_wo_pre_v3<<<grid, 64>>>(d_tileNnz,
-                                        d_block_tileStart_idx,
-                                        d_warp_tileRow_idx,
-                                        d_tileColIdx,
-                                        data.tileLeftColIdx.size(),
-                                        d_r_c_Offset,
-                                        d_vals,
-                                        data.k,
-                                        d_mat_b,
-                                        d_mat_c);
-	    */
+        //flexspgemm_cuda_wo_pre_v3<<<grid, 64>>>(d_tileNnz,
+        //                                d_block_tileStart_idx,
+        //                                d_warp_tileRow_idx,
+        //                                d_tileColIdx,
+        //                                data.tileLeftColIdx.size(),
+        //                                d_r_c_Offset,
+        //                                d_vals,
+        //                                data.k,
+        //                                d_mat_b,
+        //                                d_mat_c);
+	    
         
         flexspgemm_cuda_wo_pre_v4<tm, tn, 4><<<gridx,threads>>>(d_tileRowPtr, 
                                                              d_tileNnz, 
@@ -1327,6 +1006,7 @@ void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes){
     CHECK_CUDA(cudaFree(d_bitMap));
     CHECK_CUDA(cudaFree(d_rcOffset));
 }
+*/
 /*
 void flexspgemm(float* h_res_c, const mat& data, const float* mat_b, Perfs& perfRes){
 

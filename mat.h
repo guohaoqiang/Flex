@@ -8,7 +8,7 @@
 #define DEBUG
 using namespace std;
 
-template<int TM, int TN>
+//template<int TM, int TN>
 class mat{
 public:
 	int m,n,k;
@@ -22,7 +22,8 @@ public:
 	mat(std::vector<unsigned int>& rowPtr, 
         std::vector<unsigned int>& colIdx, 
         std::vector<DataType>& vals, 
-        int h, int w, int n);
+        int h, int w, int n,
+        int tileh, int tilew);
 	void print1();
 	void print2();
     
@@ -57,15 +58,16 @@ public:
 	void csr2flex(int i);
 };
 
-template<int TM, int TN>
-mat<TM,TN>::mat(std::vector<unsigned int>& r, 
+//template<int TM, int TN>
+mat::mat(std::vector<unsigned int>& r, 
 		std::vector<unsigned int>& c, 
 		std::vector<DataType>& v, 
 		int h, 
 		int kk,
-		int nz):m(h),k(kk),nnz(nz),rowPtr(r),colIdx(c),vals(v){
+		int nz,
+        int tileh,int tilew):m(h),k(kk),nnz(nz),rowPtr(r),colIdx(c),vals(v){
             n = m;
-			tm = TM,tn = TN;
+			tm = tileh,tn = tilew;
 			tileRowPtr.push_back(0);
 			nnzPtr.push_back(0);
             // v4 kernel
@@ -89,8 +91,8 @@ mat<TM,TN>::mat(std::vector<unsigned int>& r,
 			rgl_colOffset.resize(nnz);
 			rgl_newVals.resize(nnz);
 }
-template<int TM, int TN>
-void mat<TM,TN>::print1(){
+//template<int TM, int TN>
+void mat::print1(){
 #ifdef DEBUG
 	for (int i=0; i<rgl_tileRowPtr.size(); ++i)
 		std::cout<<rgl_tileRowPtr[i]<<" ";
@@ -114,8 +116,8 @@ void mat<TM,TN>::print1(){
 	std::cout<<"Regular Tiles: "<<rgl_nnzPtr.size()-1<<std::endl;
 }
 
-template<int TM, int TN>
-void mat<TM,TN>::print2(){
+//template<int TM, int TN>
+void mat::print2(){
 #ifdef DEBUG
     for (int i=0; i<tileRowPtr.size(); ++i)
 		std::cout<<tileRowPtr[i]<<" ";
@@ -169,8 +171,8 @@ void mat<TM,TN>::print2(){
 	std::cout<<"Flex Tiles: "<<nnzPtr.size()-1<<std::endl;
 }
 
-template<int TM, int TN>
-void mat<TM,TN>::csr2tile(){
+//template<int TM, int TN>
+void mat::csr2tile(){
 	
 	int tileRows = (m+tm-1)/tm;
 		
@@ -197,8 +199,8 @@ void mat<TM,TN>::csr2tile(){
 	block_tileStart_idx.push_back(tileRowPtr.back());
 }
 // convert a row of tiles to FlexSpTiles
-template<int TM, int TN>
-void mat<TM,TN>::csr2flex(int ridx){
+//template<int TM, int TN>
+void mat::csr2flex(int ridx){
 	// row tile upper bound and lower bound
 	int rowStart = ridx * tm;
 	int rowEnd = min(m, (ridx+1)*tm); // exclusive
@@ -288,8 +290,8 @@ void mat<TM,TN>::csr2flex(int ridx){
 	tileRowPtr.push_back(tileRowPtr.back()+tiles_in_cur_row);
 }
 // convert a row of tiles to regular tiles
-template<int TM, int TN>
-void mat<TM,TN>::csr2regular(int ridx){
+//template<int TM, int TN>
+void mat::csr2regular(int ridx){
 	// row tile upper bound and lower bound
 	int rowStart = ridx * tm;
 	int rowEnd = min(m, (ridx+1)*tm); // exclusive
