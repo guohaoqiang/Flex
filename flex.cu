@@ -583,8 +583,11 @@ void run(DataLoader& input){
         cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
         elap_t += spgemm_duration; 
         cudaDeviceSynchronize(); 
-        
-        
+
+          table.entry
+            ("Tile", "%-6s",
+             to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
+
           // Get and print elapsed time.
           //
           const double et_seconds = NPerf_kernel_et_get();
@@ -605,7 +608,7 @@ void run(DataLoader& input){
               NPerf_metric_value_get("sm__sass_inst_executed_op_st.sum")
               / n_madd_p_wp );
           table.entry
-            ( "All", "%6.2f",
+            ( "All", "%5.1f",
               NPerf_metric_value_get("sm__inst_executed.sum")
               / n_madd_p_wp );
 
@@ -614,7 +617,7 @@ void run(DataLoader& input){
           // Write an extra header line over the next entry.
           table.header_span("Time",1);
           table.entry
-            ( "Cyc", "%6.1f",
+            ( "Cyc", "%4.0f",
               NPerf_metric_value_get("sm__cycles_elapsed.max") * fp32_per_chip
               / n_madd );
 
@@ -630,13 +633,13 @@ void run(DataLoader& input){
 
           table.header_span_start("L1 ⇆ L2");
           table.entry
-            ( "GB/s", "%6.1f",
+            ( "GB/s", "%4.0f",
               ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
                 + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
               / et_seconds * 1e-9 );
 
           table.entry
-            ("% Pk", "%5.2f",
+            ("% Pk", "%4.1f",
              NPerf_metric_value_get
              ("l1tex__m_l1tex2xbar_throughput"
               ".avg.pct_of_peak_sustained_elapsed"));
@@ -645,7 +648,7 @@ void run(DataLoader& input){
 
           table.header_span_start("L2 ⇆ DRAM");
           table.entry
-            ( "GB/s", "%7.1f",
+            ( "GB/s", "%4.0f",
               NPerf_metric_value_get("dram__bytes.sum") / et_seconds * 1e-9 );
 
           table.entry
