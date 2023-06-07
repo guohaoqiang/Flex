@@ -197,7 +197,7 @@ constexpr tileConf tileConfs[] =
 void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const int tm, const int tn){
         // verify results
         int count = 0;
-        std::cout<<"Verify result accuracy ("<< to_string(tm) << "X" << to_string(tn) << ") ... " <<std::endl; 
+        //std::cout<<"Verify result accuracy ("<< to_string(tm) << "X" << to_string(tn) << ") ... " <<std::endl; 
         for (int i=0; i<m; ++i){
             for (int j=0; j<n; ++j){
                 if (abs(h_gold[i*n+j]-h_res[i*n+j])>=0.01){
@@ -208,13 +208,38 @@ void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const i
             }
         }
         perfRes.flex_spgemm_errors.push_back(count);
-        std::cout<<"Kernel ("<< to_string(tm) << "X" << to_string(tn) << ") errs: " << count<<std::endl;
+        if (count>0)
+            std::cout<<"Kernel ("<< to_string(tm) << "X" << to_string(tn) << ") errs: " << count<<std::endl;
         memset(h_res, 0, n*m*sizeof(float));
 }
 void run(DataLoader& input){
 
     NPerf_init();
     GPU_Info info = print_gpu_and_kernel_info();
+    const cudaDeviceProp cuda_prop = info.cuda_prop;
+    // Get number of SMs (aka MPs).
+    //
+    const int num_sm = cuda_prop.multiProcessorCount;
+
+    // Compute number of FP32 per chip.
+    //
+    const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
+    
+    NPerf_metric_collect("sm__cycles_elapsed.max");                                                                            
+    NPerf_metric_collect("sm__inst_executed.sum");
+    NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
+    NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_st.sum");
+    NPerf_metric_collect
+        ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed");
+    NPerf_metric_collect
+        ("l1tex__m_l1tex2xbar_throughput.avg.pct_of_peak_sustained_elapsed");
+    NPerf_metric_collect("dram__bytes.sum");
+    
+    const int l2_size_chars = info.cuda_prop.l2CacheSize;
+    const int a_size = l2_size_chars / sizeof(float) * 2;
+    
     Perfs perfRes;
     
     // ------------ run baseline cuspgemm ----------------
@@ -257,11 +282,11 @@ void run(DataLoader& input){
     vector<mat> spMats;
     
     #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
-     {  const int idx = kernels.size(); \
+    {const int idx = kernels.size(); \
         kernels.emplace_back(info.GET_INFO((k)),#k,sidx,nbx,nby,nt); }
 
-    #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt) \                                                                                     
-     {  const int idx = kernels.size(); \
+    #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\
+    {const int idx = kernels.size(); \
         spMats.emplace_back(mat(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz, tileConfs[sidx].tm,tileConfs[sidx].tn)); \
         EXAMINE_KERNEL((k<tileConfs[sidx].tm,tileConfs[sidx].tn,4>), sidx, nbx, nby, nt); }
 // NBX,NBY,NT are useless currently
@@ -409,7 +434,12 @@ void run(DataLoader& input){
     }
 #endif
 
+    pTable table(stdout);
     for( int id=0; id<kernels.size(); ++id){
+        //std::string name(to_string(spMats[id].tm)+"X"+to_string(spMats[id].tn));
+        //table.entry("Tiling", "%s", name.c_str());
+        //table.entry("wp", "%2d", id);
+        
         spMats[id].csr2tile();
         // allocate device memory
         // index of the first nz entry in each tile, length = #tiles+1
@@ -495,13 +525,24 @@ void run(DataLoader& input){
         //printf("@415:   data.block_tileStart_idx.size() = %d\n",data.block_tileStart_idx.size());
         //printf("@416:   data.k = %d\n",data.k);
         //LOG(INFO) << "Ahead the kernel ...";
-        printf("%d of %s, Ahead the kernel ...\n",__LINE__,__FILE__);
+        //printf("%d of %s, Ahead the kernel ...\n",__LINE__,__FILE__);
         //std::cout<<"block_tileStart_idx:"<<std::endl;
         //print(block_tileStart_idx);
         //std::cout<<"warp_tileRow_idx:"<<std::endl;
         //print(warp_tileRow_idx);
+       
         
-        //int gridx = 4096;
+        constexpr int wp_sz = 32;
+        // Get measured number of instructions executed.
+        //
+        const double n_insn =
+            NPerf_metric_value_get("sm__inst_executed.sum") * wp_sz;
+        pTable_Row row(table);
+        // Compute the expected number of multiply/add instructions.
+        //
+        const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k;
+        const double n_madd_p_wp = double(n_madd) / wp_sz;
+                
         int threads = 128;
 
         Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
@@ -525,16 +566,16 @@ void run(DataLoader& input){
         cudaEventRecord(spgemm_start);
         for ( NPerf_data_reset(); NPerf_need_run_get(); ){
             int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
-            KPtr(ki->func_ptr)<<<gridx,threads>>>(d_tileRowPtr,\ 
-                               d_tileNnz, \
-                               d_nnzTile, \
-                               d_bitMap, \
-                               d_tileColIdx, \
-                               d_rcOffset, \
-                               d_vals, \
-                               spMats[id].m,\
-                               d_mat_b,\ 
-                               spMats[id].k, \
+            KPtr(ki->func_ptr)<<<gridx,threads>>>(d_tileRowPtr, 
+                               d_tileNnz,
+                               d_nnzTile,
+                               d_bitMap,
+                               d_tileColIdx,
+                               d_rcOffset,
+                               d_vals,
+                               spMats[id].m,
+                               d_mat_b,
+                               spMats[id].k,
                                d_mat_c);
         }
         cudaEventRecord(spgemm_stop);
@@ -542,27 +583,94 @@ void run(DataLoader& input){
         cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
         elap_t += spgemm_duration; 
         cudaDeviceSynchronize(); 
+        
+        
+          // Get and print elapsed time.
+          //
+          const double et_seconds = NPerf_kernel_et_get();
+          table.entry( "t/µs", "%4.0f", et_seconds * 1e6 );
+
+          // Write a heading that will span multiple columns.
+          //
+          table.header_span_start("Per Mult");
+
+          table.header_span_start("Num Insns");
+
+          table.entry
+            ( "Load", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_ld.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "Store", "%5.2f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_st.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "All", "%6.2f",
+              NPerf_metric_value_get("sm__inst_executed.sum")
+              / n_madd_p_wp );
+
+          table.header_span_end();
+
+          // Write an extra header line over the next entry.
+          table.header_span("Time",1);
+          table.entry
+            ( "Cyc", "%6.1f",
+              NPerf_metric_value_get("sm__cycles_elapsed.max") * fp32_per_chip
+              / n_madd );
+
+          table.header_span("L1←L2",1);
+          table.entry
+            ( "Bytes", "%4.2f",
+              NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
+              / a_size );
+
+          table.header_span_end();
+
+          table.header_span_start("Entire GPU");
+
+          table.header_span_start("L1 ⇆ L2");
+          table.entry
+            ( "GB/s", "%6.1f",
+              ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
+              / et_seconds * 1e-9 );
+
+          table.entry
+            ("% Pk", "%5.2f",
+             NPerf_metric_value_get
+             ("l1tex__m_l1tex2xbar_throughput"
+              ".avg.pct_of_peak_sustained_elapsed"));
+
+          table.header_span_end();
+
+          table.header_span_start("L2 ⇆ DRAM");
+          table.entry
+            ( "GB/s", "%7.1f",
+              NPerf_metric_value_get("dram__bytes.sum") / et_seconds * 1e-9 );
+
+          table.entry
+            ("% Pk", "%5.1f",
+             NPerf_metric_value_get
+             ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"));
+
+          table.header_span_end();
+
+          table.header_span( "FP Thpt", 1);
+          table.entry( "GFLOP/s", "%9.1f", 1e-9 * n_madd / et_seconds );
+
+          table.header_span_end();
+        
         //LOG(INFO) << "After the kernel ...";
-        printf("%d of %s, After the kernel ...\n",__LINE__,__FILE__);
+        //printf("%d of %s, After the kernel ...\n",__LINE__,__FILE__);
 
         // transfer data to host
         //LOG(INFO) << "Transfer results back ...";
-        printf("%d of %s, Transfer results back ...\n",__LINE__,__FILE__);
+        //printf("%d of %s, Transfer results back ...\n",__LINE__,__FILE__);
         cudaMemcpy(h_res_c, d_mat_c, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyDeviceToHost);
         resCheck(h_ref_c, h_res_c, spMats[id].n, spMats[id].k, perfRes, spMats[id].tm, spMats[id].tn);
         
-        float t = elap_t*(1e-3)/10;
+        float t = elap_t*(1e-3);
         perfRes.flex_spgemm_time.push_back(t);
-        
-        //std::cout<<"Flexspgemm time: "<<t<<" s "<<std::endl;
-        float gflops = (2*spMats[id].newVals.size()*spMats[id].k)/(1e+9);
-        perfRes.flex_spgemm_throughput.push_back(gflops/t);
-        //std::cout<<"Flexspgemm Throughput: "<<gflops/t<<" gflops/s "<<std::endl;
-        float gb = (float)((spMats[id].nnzPtr.size()+spMats[id].block_tileStart_idx.size()
-                +spMats[id].warp_tileRow_idx.size()+spMats[id].tileColIdx.size()
-                +spMats[id].tileLeftColIdx.size()+spMats[id].newVals.size()+2*spMats[id].m*spMats[id].k)*4+spMats[id].rc_Offset.size())/(1e+9);
-        perfRes.flex_spgemm_bandwidth.push_back(gb/t);
-        //std::cout<<"Flexspgemm Bandwidth: "<<gb/t<<" GB/s "<<std::endl;
         
         CHECK_CUDA(cudaFree(d_tileNnz));
 #ifdef V3_KERNEL
@@ -587,237 +695,6 @@ void run(DataLoader& input){
     free(h_ref_c);
     free(host_mat_b);
 
-    int show_idx = 0;
-    std::cout<<setw(20)<<left<<"sparse mat (M X N) "
-        <<setw(18)<<left<<" tile size (tm X tn) "
-        <<setw(20)<<left<<"  dense mat (N X K) "
-        <<setw(15)<<left<<" cuspgemm t "
-        <<setw(15)<<left<<" flex_spgemm t "
-        <<setw(20)<<left<<" flex_spgemm errors "<<std::endl;
-#ifdef CUBE4X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 4 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT8X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 8 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT16X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 16 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT32X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 32 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT64X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 64 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT128X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 128 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT256X4
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 256 X 4 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT4X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 4 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef CUBE8X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 8 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT16X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 16 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT32X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 32 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT64X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 64 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT128X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 128 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT256X8
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 256 X 8 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT4X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 4 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT8X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 8 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef CUBE16X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 16 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT32X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 32 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT64X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 64 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT128X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 128 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT256X16
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 256 X 16 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT4X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 4 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT8X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 8 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT16X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 16 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef CUBE32X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 32 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT64X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 64 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT128X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 128 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
-#ifdef RECT256X32
-    std::cout<<setw(20)<<left<<to_string(input.n)+" X "+to_string(input.n)
-        <<setw(23)<<left<<" 256 X 32 "
-        <<setw(19)<<left<<to_string(input.n)+" X "+to_string(input.dim)
-        <<setw(15)<<left<<to_string(perfRes.cuspgemm_time)
-        <<setw(15)<<left<<to_string(perfRes.flex_spgemm_time[show_idx])
-        <<setw(20)<<left<<to_string(perfRes.flex_spgemm_errors[show_idx++])<<std::endl;
-#endif
 #ifdef OUTPUTCSV
     std::ofstream myfile(input.graph_name+"_time.csv");
     myfile << "cuSpgemm," << "4X4,"<<"8X4,"<<"16X4,"<<"32X4,"<< "64X4,"<<"128X4,"<<"256X4,"
@@ -833,348 +710,6 @@ void run(DataLoader& input){
     myfile.close(); 
 #endif
 }
-/*
-temate<int tm, int tn>
-void flexspmm(float* h_res_c, DataLoader& input, const float* mat_b, Perfs& perfRes){
-
-    mat<tm,tn> data(input.cpuA->row, input.cpuA->col, input.cpuA->vals, input.cpuA->r, input.dim, input.cpuA->nnz);
-	data.csr2tile();
-	// allocate device memory
-    // index of the first nz entry in each tile, length = #tiles+1
-    int* d_tileNnz; 
-	CHECK_CUDA(cudaMalloc(&d_tileNnz, data.nnzPtr.size()*sizeof(int)));
-    
-#ifdef V3_KERNEL
-    // index of the first tile for each thread block, length = #blocks+1
-    int* d_block_tileStart_idx; 
-	CHECK_CUDA(cudaMalloc(&d_block_tileStart_idx, data.block_tileStart_idx.size()*sizeof(int)));
-    
-    // row index of tiles for each thread block, length = #blocks
-    int* d_warp_tileRow_idx; 
-	CHECK_CUDA(cudaMalloc(&d_warp_tileRow_idx, data.warp_tileRow_idx.size()*sizeof(int)));
-	
-    // row&col index of vals in sparse matrix, length = nnz
-    char* d_r_c_Offset; 
-	CHECK_CUDA(cudaMalloc(&d_r_c_Offset, data.rc_Offset.size()*sizeof(char)));
-#endif
-    // column index of tiles, length = #tiles
-    int* d_tileColIdx; 
-	CHECK_CUDA(cudaMalloc(&d_tileColIdx, data.tileLeftColIdx.size()*sizeof(int)));
-      
-    // non-zero vals of sparse matrix, length = nnz
-    float* d_vals; 
-	CHECK_CUDA(cudaMalloc(&d_vals, data.newVals.size()*sizeof(int)));
-   
-
-    // v4 kernel
-    int* d_tileRowPtr; 
-	CHECK_CUDA(cudaMalloc(&d_tileRowPtr, data.tileRowPtr.size()*sizeof(int)));
-    //std::cout<<"@536: metaTile.size() = "<<data.metaTile.size()<<std::endl;
-    int* d_nnzTile; 
-	CHECK_CUDA(cudaMalloc(&d_nnzTile, data.nnzTile.size()*sizeof(int)));
-    int* d_bitMap; 
-	CHECK_CUDA(cudaMalloc(&d_bitMap, data.bitMap.size()*sizeof(int)));
-    int* d_rcOffset; 
-	CHECK_CUDA(cudaMalloc(&d_rcOffset, data.rcOffset.size()*sizeof(int)));
-    //std::cout<<"@539: rcOffset.size() = "<<data.rcOffset.size()<<std::endl;
-
-	//data.print2();
-
-    
-    // Matrix B
-    //float* mat_b = (float*)malloc(data.m*data.k*sizeof(float));
-    //for (size_t i=0; i<data.m; ++i){
-    //    for (size_t j=0; j<data.k; ++j){
-    //        mat_b[i*data.k+j] = 1.0;
-    //    }
-    //}
-    
-    float* d_mat_b; 
-	CHECK_CUDA(cudaMalloc(&d_mat_b, data.m*data.k*sizeof(float)));
-    
-    // Matrix C
-    float* d_mat_c; 
-	CHECK_CUDA(cudaMalloc(&d_mat_c, data.m*data.k*sizeof(float)));
-    cudaMemset(d_mat_c, 0.0, data.m*data.k*sizeof(float));
-    cudaDeviceSynchronize(); 
-    
-    
-    // transfer data to device
-	cudaMemcpy(d_tileNnz, data.nnzPtr.data(), data.nnzPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_tileColIdx, data.tileLeftColIdx.data(), data.tileLeftColIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
-#ifdef V3_KERNEL
-    cudaMemcpy(d_block_tileStart_idx, data.block_tileStart_idx.data(), data.block_tileStart_idx.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_warp_tileRow_idx, data.warp_tileRow_idx.data(), data.warp_tileRow_idx.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_r_c_Offset, data.rc_Offset.data(), data.rc_Offset.size()*sizeof(char), cudaMemcpyHostToDevice);
-#endif
-    cudaMemcpy(d_vals, data.newVals.data(), data.newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_mat_b, mat_b, data.m*data.k*sizeof(float), cudaMemcpyHostToDevice);
-	//cudaMemcpy(d_mat_c, mat_c, data.m*data.k*sizeof(float), cudaMemcpyHostToDevice);
-
-    // v4 kernel
-	cudaMemcpy(d_tileRowPtr, data.tileRowPtr.data(), data.tileRowPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_nnzTile, data.nnzTile.data(), data.nnzTile.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_bitMap, data.bitMap.data(), data.bitMap.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_rcOffset, data.rcOffset.data(), data.rcOffset.size()*sizeof(int), cudaMemcpyHostToDevice);
-    
-
-	// each thread block has 2 warps
-	//dim3 grid(data.block_tileStart_idx.size()-1, (data.k+31)/32);
-    //printf("@415:   data.block_tileStart_idx.size() = %d\n",data.block_tileStart_idx.size());
-    //printf("@416:   data.k = %d\n",data.k);
-    //LOG(INFO) << "Ahead the kernel ...";
-    printf("%d of %s, Ahead the kernel ...\n",__LINE__,__FILE__);
-    //std::cout<<"block_tileStart_idx:"<<std::endl;
-    //print(block_tileStart_idx);
-    //std::cout<<"warp_tileRow_idx:"<<std::endl;
-    //print(warp_tileRow_idx);
-	
-    int gridx = (data.m+tm-1)/tm;
-    //int gridx = 4096;
-    int threads = 128;
-
-    // warm up
-    for (int i=0; i<5; ++i){
-     
-        //flexspgemm_cuda_reg_pre_v2<<<grid, 64>>>(d_tileNnz, 
-        //flexspgemm_cuda_wo_pre_v3<<<grid, 64>>>(d_tileNnz,
-        //                                        d_block_tileStart_idx, 
-        //                                        d_warp_tileRow_idx, 
-        //                                        d_tileColIdx, 
-        //                                        data.tileLeftColIdx.size(), 
-        //                                        d_r_c_Offset, 
-        //                                        d_vals, 
-        //                                        data.k, 
-        //                                        d_mat_b, 
-        //                                        d_mat_c);
-        
-        flexspgemm_cuda_wo_pre_v4<tm, tn, 4><<<gridx,threads>>>(d_tileRowPtr, 
-                                                             d_tileNnz, 
-                                                             d_nnzTile,
-                                                             d_bitMap,
-                                                             d_tileColIdx,
-                                                             d_rcOffset, 
-                                                             d_vals, 
-                                                             data.m,
-                                                             d_mat_b, 
-                                                             data.k, 
-                                                             d_mat_c);
-    }
-    cudaMemset(d_mat_c, 0.0, data.m*data.k*sizeof(float));
-    // run test
-    float spgemm_duration;
-    float elap_t = 0; 
-    cudaEvent_t spgemm_start, spgemm_stop;
-	cudaEventCreate(&spgemm_start);
-	cudaEventCreate(&spgemm_stop);
-    cudaEventRecord(spgemm_start);
-    for (int i=0; i<10; ++i){
-        //std::cout<<"@618 -----------------------   i = "<<i<<" gridx = "<<gridx<<std::endl;
-        
-        //flexspgemm_cuda_reg_pre_v2<<<grid, 64>>>(d_tileNnz,
-        //flexspgemm_cuda_wo_pre_v3<<<grid, 64>>>(d_tileNnz,
-        //                                d_block_tileStart_idx,
-        //                                d_warp_tileRow_idx,
-        //                                d_tileColIdx,
-        //                                data.tileLeftColIdx.size(),
-        //                                d_r_c_Offset,
-        //                                d_vals,
-        //                                data.k,
-        //                                d_mat_b,
-        //                                d_mat_c);
-	    
-        
-        flexspgemm_cuda_wo_pre_v4<tm, tn, 4><<<gridx,threads>>>(d_tileRowPtr, 
-                                                             d_tileNnz, 
-                                                             d_nnzTile,
-                                                             d_bitMap,
-                                                             d_tileColIdx,
-                                                             d_rcOffset, 
-                                                             d_vals, 
-                                                             data.m,
-                                                             d_mat_b, 
-                                                             data.k, 
-                                                             d_mat_c);
-        
-        //if (i<9) cudaMemset(d_mat_c, 0.0, data.m*data.k*sizeof(float));
-    }
-    cudaEventRecord(spgemm_stop);
-    cudaEventSynchronize(spgemm_stop);
-    cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
-    elap_t += spgemm_duration; 
-    cudaDeviceSynchronize(); 
-    //LOG(INFO) << "After the kernel ...";
-    printf("%d of %s, After the kernel ...\n",__LINE__,__FILE__);
-
-    // transfer data to host
-    //LOG(INFO) << "Transfer results back ...";
-    printf("%d of %s, Transfer results back ...\n",__LINE__,__FILE__);
-	cudaMemcpy(h_res_c, d_mat_c, data.m*data.k*sizeof(float), cudaMemcpyDeviceToHost);
-    
-    float t = elap_t*(1e-3)/10;
-    perfRes.flex_spgemm_time.push_back(t);
-    //std::cout<<"Flexspgemm time: "<<t<<" s "<<std::endl;
-    float gflops = (2*data.newVals.size()*data.k)/(1e+9);
-    perfRes.flex_spgemm_throughput.push_back(gflops/t);
-    //std::cout<<"Flexspgemm Throughput: "<<gflops/t<<" gflops/s "<<std::endl;
-    float gb = (float)((data.nnzPtr.size()+data.block_tileStart_idx.size()
-            +data.warp_tileRow_idx.size()+data.tileColIdx.size()
-            +data.tileLeftColIdx.size()+data.newVals.size()+2*data.m*data.k)*4+data.rc_Offset.size())/(1e+9);
-    perfRes.flex_spgemm_bandwidth.push_back(gb/t);
-    //std::cout<<"Flexspgemm Bandwidth: "<<gb/t<<" GB/s "<<std::endl;
-    
-    CHECK_CUDA(cudaFree(d_tileNnz));
-#ifdef V3_KERNEL
-	CHECK_CUDA(cudaFree(d_block_tileStart_idx));
-	CHECK_CUDA(cudaFree(d_warp_tileRow_idx));
-	CHECK_CUDA(cudaFree(d_r_c_Offset));
-#endif
-    CHECK_CUDA(cudaFree(d_tileColIdx));
-    CHECK_CUDA(cudaFree(d_vals));
-	CHECK_CUDA(cudaFree(d_mat_b));
-	CHECK_CUDA(cudaFree(d_mat_c));
-    
-    // v4 kernel
-    CHECK_CUDA(cudaFree(d_tileRowPtr));
-    CHECK_CUDA(cudaFree(d_nnzTile));
-    CHECK_CUDA(cudaFree(d_bitMap));
-    CHECK_CUDA(cudaFree(d_rcOffset));
-}
-*/
-/*
-void flexspgemm(float* h_res_c, const mat& data, const float* mat_b, Perfs& perfRes){
-
-	// allocate device memory
-    // index of the first nz entry in each tile, length = #tiles+1
-    int* d_tileNnz; 
-	cudaMalloc(&d_tileNnz, data.nnzPtr.size()*sizeof(int));
-    
-    // index of the first tile for each thread block, length = #blocks+1
-    int* d_block_tileStart_idx; 
-	cudaMalloc(&d_block_tileStart_idx, data.block_tileStart_idx.size()*sizeof(int));
-    
-    // row index of tiles for each thread block, length = #blocks
-    int* d_warp_tileRow_idx; 
-	cudaMalloc(&d_warp_tileRow_idx, data.warp_tileRow_idx.size()*sizeof(int));
-	
-    // column index of tiles, length = #tiles
-    int* d_tileColIdx; 
-	cudaMalloc(&d_tileColIdx, data.tileLeftColIdx.size()*sizeof(int));
-     
-    // row&col index of vals in sparse matrix, length = nnz
-    char* d_r_c_Offset; 
-	cudaMalloc(&d_r_c_Offset, data.rc_Offset.size()*sizeof(char));
-    
-    // non-zero vals of sparse matrix, length = nnz
-    float* d_vals; 
-	cudaMalloc(&d_vals, data.newVals.size()*sizeof(int));
-    
-    
-    // Matrix B
-    //float* mat_b = (float*)malloc(data.m*data.k*sizeof(float));
-    //for (size_t i=0; i<data.m; ++i){
-    //    for (size_t j=0; j<data.k; ++j){
-    //        mat_b[i*data.k+j] = 1.0;
-    //    }
-    //}
-    
-    float* d_mat_b; 
-	cudaMalloc(&d_mat_b, data.m*data.k*sizeof(float));
-    
-    // Matrix C
-    float* d_mat_c; 
-	cudaMalloc(&d_mat_c, data.m*data.k*sizeof(float));
-    cudaMemset(d_mat_c, 0.0, data.m*data.k*sizeof(float));
-    cudaDeviceSynchronize(); 
-    
-    
-    // transfer data to device
-	cudaMemcpy(d_tileNnz, data.nnzPtr.data(), data.nnzPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_block_tileStart_idx, data.block_tileStart_idx.data(), data.block_tileStart_idx.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_warp_tileRow_idx, data.warp_tileRow_idx.data(), data.warp_tileRow_idx.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_tileColIdx, data.tileLeftColIdx.data(), data.tileLeftColIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_r_c_Offset, data.rc_Offset.data(), data.rc_Offset.size()*sizeof(char), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_vals, data.newVals.data(), data.newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_mat_b, mat_b, data.m*data.k*sizeof(float), cudaMemcpyHostToDevice);
-	//cudaMemcpy(d_mat_c, mat_c, data.m*data.k*sizeof(float), cudaMemcpyHostToDevice);
-
-	// each thread block has 2 warps
-	dim3 grid(data.block_tileStart_idx.size()-1, (data.k+31)/32);
-    LOG(INFO) << "Ahead the kernel ...";
-    //std::cout<<"block_tileStart_idx:"<<std::endl;
-    //print(block_tileStart_idx);
-    //std::cout<<"warp_tileRow_idx:"<<std::endl;
-    //print(warp_tileRow_idx);
-	
-    // warm up
-    for (size_t i=0; i<5; ++i){
-        flexspgemm_cuda_reg_pre<<<grid, 64>>>(d_tileNnz,
-                                        d_block_tileStart_idx,
-                                        d_warp_tileRow_idx,
-                                        d_tileColIdx,
-                                        data.tileLeftColIdx.size(),
-                                        d_r_c_Offset,
-                                        d_vals,
-                                        data.k,
-                                        d_mat_b,
-                                        d_mat_c);
-        cudaMemset(d_mat_c, 0.0, data.m*data.k*sizeof(float));
-    }
-    // run test
-    float spgemm_duration;
-    cudaEvent_t spgemm_start, spgemm_stop;
-	cudaEventCreate(&spgemm_start);
-	cudaEventCreate(&spgemm_stop);
-    float elap_t = 0; 
-    for (size_t i=0; i<10; ++i){
-        cudaEventRecord(spgemm_start);
-        flexspgemm_cuda_reg_pre<<<grid, 64>>>(d_tileNnz,
-                                        d_block_tileStart_idx,
-                                        d_warp_tileRow_idx,
-                                        d_tileColIdx,
-                                        data.tileLeftColIdx.size(),
-                                        d_r_c_Offset,
-                                        d_vals,
-                                        data.k,
-                                        d_mat_b,
-                                        d_mat_c);
-	    cudaEventRecord(spgemm_stop);
-	    cudaEventSynchronize(spgemm_stop);
-	    cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
-        elap_t += spgemm_duration;
-        if (i<9) cudaMemset(d_mat_c, 0.0, data.m*data.k*sizeof(float));
-    }
-    
-    cudaDeviceSynchronize(); 
-    LOG(INFO) << "After the kernel ...";
-
-    // transfer data to host
-    LOG(INFO) << "Transfer results back ...";
-	cudaMemcpy(h_res_c, d_mat_c, data.m*data.k*sizeof(float), cudaMemcpyDeviceToHost);
-    
-    float t = elap_t*(1e-3)/10;
-    perfRes.flex_spgemm_time.push_back(t);
-    //std::cout<<"Flexspgemm time: "<<t<<" s "<<std::endl;
-    float gflops = (2*data.newVals.size()*data.k)/(1e+9);
-    perfRes.flex_spgemm_throughput.push_back(gflops/t);
-    //std::cout<<"Flexspgemm Throughput: "<<gflops/t<<" gflops/s "<<std::endl;
-    float gb = (float)((data.nnzPtr.size()+data.block_tileStart_idx.size()
-            +data.warp_tileRow_idx.size()+data.tileColIdx.size()
-            +data.tileLeftColIdx.size()+data.newVals.size()+2*data.m*data.k)*4+data.rc_Offset.size())/(1e+9);
-    perfRes.flex_spgemm_bandwidth.push_back(gb/t);
-    //std::cout<<"Flexspgemm Bandwidth: "<<gb/t<<" GB/s "<<std::endl;
-    
-    CHECK_CUDA(cudaFree(d_tileNnz));
-	CHECK_CUDA(cudaFree(d_block_tileStart_idx));
-	CHECK_CUDA(cudaFree(d_warp_tileRow_idx));
-	CHECK_CUDA(cudaFree(d_tileColIdx));
-	CHECK_CUDA(cudaFree(d_r_c_Offset));
-    CHECK_CUDA(cudaFree(d_vals));
-	CHECK_CUDA(cudaFree(d_mat_b));
-	CHECK_CUDA(cudaFree(d_mat_c)); 
-}
-*/
-
 void cuSpgemm(DataLoader& input, Perfs& perfRes){
     float elap_t = 0.0;
     float cuspgemm_duration;

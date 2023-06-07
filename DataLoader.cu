@@ -92,37 +92,37 @@ bool DataLoader::transfer(){
     //LOG(INFO) << "Transfer A row ...";
     CUDA_CHECK(cudaMemcpy(gpuA->col, cpuA->col.data(), sizeof(unsigned int)*cpuA->nnz, cudaMemcpyHostToDevice));
     //LOG(INFO) << "Transfer A, col ...";
-    CUDA_CHECK(cudaMemcpy(gpuA->vals, cpuA->vals.data(), sizeof(T)*cpuA->nnz, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(gpuA->vals, cpuA->vals.data(), sizeof(float)*cpuA->nnz, cudaMemcpyHostToDevice));
     
     //LOG(INFO) << "Transfer A, X & W to gpu ...";
-    CUDA_CHECK(cudaMemcpy(gpuX, &cpuX[0], sizeof(T)*n*dim, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(gpuW, &cpuW[0], sizeof(T)*dim*c, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(gpuC, 0, sizeof(T)*n*c));
+    CUDA_CHECK(cudaMemcpy(gpuX, &cpuX[0], sizeof(float)*n*dim, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(gpuW, &cpuW[0], sizeof(float)*dim*c, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(gpuC, 0, sizeof(float)*n*c));
     //CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(T)*n*c));
-    CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(T)*n*dim));
-    CUDA_CHECK(cudaMemset(gpuRef2, 0, sizeof(T)*n*c));
+    CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(float)*n*dim));
+    CUDA_CHECK(cudaMemset(gpuRef2, 0, sizeof(float)*n*c));
     //LOG(INFO) << "A, X & W have transfered to gpu ...";
     return true;
 }
 
 bool DataLoader::alloc(){
-    cpuX = std::make_unique<T []>(n*dim);
-    cpuW = std::make_unique<T []>(c*dim);
-    cpuC = std::make_unique<T []>(n*c);
-    cpuRef1 = std::make_unique<T []>(n*c);
-    cpuRef2 = std::make_unique<T []>(n*c);
+    cpuX = std::make_unique<float []>(n*dim);
+    cpuW = std::make_unique<float []>(c*dim);
+    cpuC = std::make_unique<float []>(n*c);
+    cpuRef1 = std::make_unique<float []>(n*c);
+    cpuRef2 = std::make_unique<float []>(n*c);
     //memset(cpuC, 0, sizeof(T)*n*c);
 
     CUDA_CHECK(cudaMalloc(&(gpuA->row), sizeof(unsigned int) * (cpuA->r+1)));
     CUDA_CHECK(cudaMalloc(&(gpuA->col), sizeof(unsigned int) * (cpuA->nnz)));
-    CUDA_CHECK(cudaMalloc(&(gpuA->vals), sizeof(T) * (cpuA->nnz)));
+    CUDA_CHECK(cudaMalloc(&(gpuA->vals), sizeof(float) * (cpuA->nnz)));
     
-    CUDA_CHECK(cudaMalloc(&gpuX, sizeof(T) * n * dim));
-    CUDA_CHECK(cudaMalloc(&gpuW, sizeof(T) * c * dim));
-    CUDA_CHECK(cudaMalloc(&gpuC, sizeof(T) * c * n));
+    CUDA_CHECK(cudaMalloc(&gpuX, sizeof(float) * n * dim));
+    CUDA_CHECK(cudaMalloc(&gpuW, sizeof(float) * c * dim));
+    CUDA_CHECK(cudaMalloc(&gpuC, sizeof(float) * c * n));
     //CUDA_CHECK(cudaMalloc(&gpuRef1, sizeof(T) * c * n));
-    CUDA_CHECK(cudaMalloc(&gpuRef1, sizeof(T) * dim * n));
-    CUDA_CHECK(cudaMalloc(&gpuRef2, sizeof(T) * c * n));
+    CUDA_CHECK(cudaMalloc(&gpuRef1, sizeof(float) * dim * n));
+    CUDA_CHECK(cudaMalloc(&gpuRef2, sizeof(float) * c * n));
     return true;
 }
 bool DataLoader::compare(){

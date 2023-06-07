@@ -11,13 +11,13 @@
 #include <assert.h>
 #include <iomanip>
 #include "common.h"
-#define T float
+//#define T float
 class CSR
 {
 public:
     std::vector<unsigned int> row;
     std::vector<unsigned int> col;
-    std::vector<T> vals;
+    std::vector<float> vals;
     size_t nnz, r, c;
 };
 
@@ -26,7 +26,7 @@ class dCSR
 public:
     unsigned int *row = nullptr;
     unsigned int *col = nullptr;
-    T *vals = nullptr;
+    float *vals = nullptr;
     size_t nnz, r, c;
 };
 
@@ -40,18 +40,18 @@ public:
     void print_data();
     
     std::unique_ptr<CSR> cpuA; // n * n 
-	std::unique_ptr<T[]> cpuX; // n * dim
-	std::unique_ptr<T[]> cpuW; // dim * c
-	std::unique_ptr<T[]> cpuC; // n * c
-	std::unique_ptr<T[]> cpuRef1; // n * c
-	std::unique_ptr<T[]> cpuRef2; // n * c
+	std::unique_ptr<float[]> cpuX; // n * dim
+	std::unique_ptr<float[]> cpuW; // dim * c
+	std::unique_ptr<float[]> cpuC; // n * c
+	std::unique_ptr<float[]> cpuRef1; // n * c
+	std::unique_ptr<float[]> cpuRef2; // n * c
     
     std::unique_ptr<dCSR> gpuA;
-    T *gpuX = nullptr;
-    T *gpuW = nullptr;
-    T *gpuC = nullptr;
-    T *gpuRef1 = nullptr;
-    T *gpuRef2 = nullptr;
+    float *gpuX = nullptr;
+    float *gpuW = nullptr;
+    float *gpuC = nullptr;
+    float *gpuRef1 = nullptr;
+    float *gpuRef2 = nullptr;
 
     size_t n, dim, c;
     std::string graph_name;

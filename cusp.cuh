@@ -3,7 +3,7 @@
 //#include <glog/logging.h>
 #include "common.h"
 #include "DataLoader.cuh"
-#define T float
+//#define T float
 //namespace cuSPARSE{
 
 int run1(DataLoader& input, Metrics& metric);

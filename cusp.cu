@@ -1,8 +1,8 @@
 #include "cusp.cuh"
 
 int run1(DataLoader& input, Metrics& metric){
-    T *gpuB = nullptr; // n * c
-    CUDA_CHECK(cudaMalloc(&gpuB, sizeof(T) * input.n * input.c));
+    float *gpuB = nullptr; // n * c
+    CUDA_CHECK(cudaMalloc(&gpuB, sizeof(float) * input.n * input.c));
     float duration, spgemm_duration, gemm_duration;
     cudaEvent_t start, stop, spgemm_start, spgemm_stop, gemm_start, gemm_stop;
 	cudaEventCreate(&start);
@@ -104,8 +104,8 @@ int run1(DataLoader& input, Metrics& metric){
 }
 
 int run2(DataLoader& input, Metrics& metric){
-    T *gpuB = nullptr; // n * dim
-    CUDA_CHECK(cudaMalloc(&gpuB, sizeof(T) * input.n * input.dim));
+    float *gpuB = nullptr; // n * dim
+    CUDA_CHECK(cudaMalloc(&gpuB, sizeof(float) * input.n * input.dim));
     float duration, spgemm_duration, gemm_duration;
     cudaEvent_t start, stop, spgemm_start, spgemm_stop, gemm_start, gemm_stop;
 	cudaEventCreate(&start);

@@ -3,6 +3,8 @@
 #include <iostream>
 #include <fstream>
 #include <gp/cuda-gpuinfo.h>
+//#include <gp/misc.h>
+#include <gp/ptable.h>
 #include <nperf.h>
 #include "common.h"
 #include "DataLoader.cuh"
