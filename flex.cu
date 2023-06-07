@@ -620,7 +620,7 @@ void run(DataLoader& input){
 
           table.header_span("L1←L2",1);
           table.entry
-            ( "Bytes", "%4.2f",
+            ( "Bytes", "%5.2f",
               NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
               / a_size );
 
