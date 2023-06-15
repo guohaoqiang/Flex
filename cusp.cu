@@ -3,12 +3,12 @@
 int run1(DataLoader& input, Metrics& metric){
     float *gpuB = nullptr; // n * c
     CUDA_CHECK(cudaMalloc(&gpuB, sizeof(float) * input.n * input.c));
-    float duration, spgemm_duration, gemm_duration;
-    cudaEvent_t start, stop, spgemm_start, spgemm_stop, gemm_start, gemm_stop;
+    float duration, spmm_duration, gemm_duration;
+    cudaEvent_t start, stop, spmm_start, spmm_stop, gemm_start, gemm_stop;
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
-	cudaEventCreate(&spgemm_start);
-	cudaEventCreate(&spgemm_stop);
+	cudaEventCreate(&spmm_start);
+	cudaEventCreate(&spmm_stop);
 	cudaEventCreate(&gemm_start);
 	cudaEventCreate(&gemm_stop);
     // ############################
@@ -36,7 +36,7 @@ int run1(DataLoader& input, Metrics& metric){
 	cudaEventSynchronize(gemm_stop);
 
     //----------  C = AB : sparsemm------------
-    cudaEventRecord(spgemm_start);
+    cudaEventRecord(spmm_start);
     // CUSPARSE APIs
     cusparseHandle_t     handle = NULL;
     cusparseSpMatDescr_t matA;
@@ -45,8 +45,8 @@ int run1(DataLoader& input, Metrics& metric){
     size_t               bufferSize = 0;
     CHECK_CUSPARSE( cusparseCreate(&handle) )
     // Create sparse matrix A in CSR format
-    CHECK_CUSPARSE( cusparseCreateCsr(&matA, input.cpuA->r, input.cpuA->c, input.cpuA->nnz,
-                                      input.gpuA->row, input.gpuA->col, input.gpuA->vals,
+    CHECK_CUSPARSE( cusparseCreateCsr(&matA, input.n, input.n, input.nnz,
+                                      input.rowPtr_dev, input.col_dev, input.vals_dev,
                                       CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                                       CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F) )
     // Create dense matrix B
@@ -70,8 +70,8 @@ int run1(DataLoader& input, Metrics& metric){
                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
                                  &alpha, matA, matB, &beta, matC, CUDA_R_32F,
                                  CUSPARSE_SPMM_CSR_ALG3, dBuffer) )
-	cudaEventRecord(spgemm_stop);
-	cudaEventSynchronize(spgemm_stop);
+	cudaEventRecord(spmm_stop);
+	cudaEventSynchronize(spmm_stop);
 
     //LOG(INFO) << "step2 of run1 completed ...";
     // ############################
@@ -81,15 +81,15 @@ int run1(DataLoader& input, Metrics& metric){
 	// ############################
 	cudaEventElapsedTime(&duration, start, stop);
 	cudaEventElapsedTime(&gemm_duration, gemm_start, gemm_stop);
-	cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
+	cudaEventElapsedTime(&spmm_duration, spmm_start, spmm_stop);
     metric.t += duration;
-    metric.spgemm_t += spgemm_duration;
+    metric.spmm_t += spmm_duration;
     metric.gemm_t += gemm_duration;
-    metric.flops = (input.cpuA->nnz * input.c + input.n * input.dim * input.c) * 2;
-    metric.spgemm_flops = (input.cpuA->nnz * input.c) * 2;
+    metric.flops = (input.nnz * input.c + input.n * input.dim * input.c) * 2;
+    metric.spmm_flops = (input.nnz * input.c) * 2;
     metric.gemm_flops = (input.n * input.dim * input.c) * 2;
     //                              A                  X                 W                    B
-    metric.dataMovement = 4*(input.cpuA->nnz + input.n*input.dim + input.dim*input.c + 2*input.n*input.c);
+    metric.dataMovement = 4*(input.nnz + input.n*input.dim + input.dim*input.c + 2*input.n*input.c);
     // destroy matrix/vector descriptors
     CHECK_CUSPARSE( cusparseDestroySpMat(matA) )
     CHECK_CUSPARSE( cusparseDestroyDnMat(matB) )
@@ -98,7 +98,7 @@ int run1(DataLoader& input, Metrics& metric){
     CHECK_CUDA( cudaFree(dBuffer) )
     CUDA_CHECK( cudaFree(gpuB) );
 
-    CUDA_CHECK(cudaMemcpy(&(input.cpuRef1[0]), input.gpuRef1, sizeof(T)*input.n*input.c, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&input.cpuRef1.data(), input.gpuRef1, sizeof(float)*input.n*input.c, cudaMemcpyDeviceToHost));
     //LOG(INFO) << "run1 completed ...";
     return 0;
 }
@@ -106,12 +106,12 @@ int run1(DataLoader& input, Metrics& metric){
 int run2(DataLoader& input, Metrics& metric){
     float *gpuB = nullptr; // n * dim
     CUDA_CHECK(cudaMalloc(&gpuB, sizeof(float) * input.n * input.dim));
-    float duration, spgemm_duration, gemm_duration;
-    cudaEvent_t start, stop, spgemm_start, spgemm_stop, gemm_start, gemm_stop;
+    float duration, spmm_duration, gemm_duration;
+    cudaEvent_t start, stop, spmm_start, spmm_stop, gemm_start, gemm_stop;
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
-	cudaEventCreate(&spgemm_start);
-	cudaEventCreate(&spgemm_stop);
+	cudaEventCreate(&spmm_start);
+	cudaEventCreate(&spmm_stop);
 	cudaEventCreate(&gemm_start);
 	cudaEventCreate(&gemm_stop);
     // ############################
@@ -119,7 +119,7 @@ int run2(DataLoader& input, Metrics& metric){
     // ############################
 
     //----------  B = AX : sparsemm------------
-    cudaEventRecord(spgemm_start);
+    cudaEventRecord(spmm_start);
     const float alpha = 1.0;
     const float beta = 0.0;
     // CUSPARSE APIs
@@ -130,8 +130,8 @@ int run2(DataLoader& input, Metrics& metric){
     size_t               bufferSize = 0;
     CHECK_CUSPARSE( cusparseCreate(&handle) )
     // Create sparse matrix A in CSR format
-    CHECK_CUSPARSE( cusparseCreateCsr(&matA, input.cpuA->r, input.cpuA->c, input.cpuA->nnz,
-                                      input.gpuA->row, input.gpuA->col, input.gpuA->vals,
+    CHECK_CUSPARSE( cusparseCreateCsr(&matA, input.n, input.n, input.nnz,
+                                      input.rowPtr_dev, input.col_dev, input.vals_dev,
                                       CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                                       CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F) )
     // Create dense matrix X
@@ -156,8 +156,8 @@ int run2(DataLoader& input, Metrics& metric){
                                  &alpha, matA, matB, &beta, matC, CUDA_R_32F,
                                  CUSPARSE_SPMM_CSR_ALG3, dBuffer) )
     //LOG(INFO) << "step1 of run2 completed ...";
-	cudaEventRecord(spgemm_stop);
-	cudaEventSynchronize(spgemm_stop);
+	cudaEventRecord(spmm_stop);
+	cudaEventSynchronize(spmm_stop);
     //----------  C = BW : sgemm------------
     
     cudaEventRecord(gemm_start);
@@ -183,16 +183,16 @@ int run2(DataLoader& input, Metrics& metric){
 	cudaEventSynchronize(stop);
 	// ############################
 	cudaEventElapsedTime(&duration, start, stop);
-	cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
+	cudaEventElapsedTime(&spmm_duration, spmm_start, spmm_stop);
 	cudaEventElapsedTime(&gemm_duration, gemm_start, gemm_stop);
     metric.t += duration;
-    metric.spgemm_t += spgemm_duration;
+    metric.spmm_t += spmm_duration;
     metric.gemm_t += gemm_duration;
-    metric.flops = (input.cpuA->nnz * input.dim + input.n * input.dim * input.c) * 2;
-    metric.spgemm_flops = (input.cpuA->nnz * input.dim) * 2;
+    metric.flops = (input.nnz * input.dim + input.n * input.dim * input.c) * 2;
+    metric.spmm_flops = (input.nnz * input.dim) * 2;
     metric.gemm_flops = (input.n * input.dim * input.c) * 2;
     //                              A                  X                 W                    B
-    metric.dataMovement = 4*(input.cpuA->nnz + input.n*input.dim + input.dim*input.c + 2*input.n*input.dim);
+    metric.dataMovement = 4*(input.nnz + input.n*input.dim + input.dim*input.c + 2*input.n*input.dim);
     // destroy matrix/vector descriptors
     CHECK_CUSPARSE( cusparseDestroySpMat(matA) )
     CHECK_CUSPARSE( cusparseDestroyDnMat(matB) )
@@ -201,7 +201,7 @@ int run2(DataLoader& input, Metrics& metric){
     CHECK_CUDA( cudaFree(dBuffer) )
     CUDA_CHECK( cudaFree(gpuB) );
 
-    CUDA_CHECK(cudaMemcpy(&(input.cpuRef2[0]), input.gpuRef2, sizeof(T)*input.n*input.c, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&input.cpuRef2.data(), input.gpuRef2, sizeof(float)*input.n*input.c, cudaMemcpyDeviceToHost));
     //LOG(INFO) << "run2 completed ...";
     return 0;
 }

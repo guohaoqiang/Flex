@@ -1,28 +1,31 @@
 #ifndef COMMON_H
 #define COMMON_H 
-//#define TM 4
-//#define TN 4
 #include <cuda_runtime.h> // cudaMalloc, cudaMemcpy, etc.
+#include <gp/cuda-gpuinfo.h>
+#include <gp/ptable.h>
+#include <nperf.h>
 #include <cublas_v2.h>       // cuSgemm
 #include <cusparse.h>         // cusparseSpMM
 #include <stdio.h>            // printf
 #include <stdlib.h>           // EXIT_FAILURE
 #include <vector>
+//#define AXW
+
 struct Metrics {
     float t = 0.0f;
-    float spgemm_t = 0.0f;
+    float spmm_t = 0.0f;
     float gemm_t = 0.0f;
     float flops = 0.0f;
-    float spgemm_flops = 0.0f;
+    float spmm_flops = 0.0f;
     float gemm_flops = 0.0f;
     float dataMovement = 0.0f;
 
     void operator+=(const Metrics& b) {
         t += b.t;
-        spgemm_t += b.spgemm_t;
+        spmm_t += b.spmm_t;
         gemm_t += b.gemm_t;
         flops = b.flops;
-        spgemm_flops = b.spgemm_flops;
+        spmm_flops = b.spmm_flops;
         gemm_flops = b.gemm_flops;
     }
 
@@ -34,15 +37,15 @@ struct Metrics {
 
 class Perfs {
 public:
-    Perfs():cuspgemm_time(0.0),cuspgemm_throughput(0.0),cuspgemm_bandwidth(0.0){}
-    float cuspgemm_time;
-    float cuspgemm_throughput;
-    float cuspgemm_bandwidth;
+    Perfs():cuspmm_time(0.0),cuspmm_throughput(0.0),cuspmm_bandwidth(0.0){}
+    float cuspmm_time;
+    float cuspmm_throughput;
+    float cuspmm_bandwidth;
 
-    std::vector<float> flex_spgemm_time;
-    std::vector<float> flex_spgemm_throughput;
-    std::vector<float> flex_spgemm_bandwidth;
-    std::vector<int> flex_spgemm_errors;
+    std::vector<float> flex_spmm_time;
+    std::vector<float> flex_spmm_throughput;
+    std::vector<float> flex_spmm_bandwidth;
+    std::vector<int> flex_spmm_errors;
 };
 
 #define CUDA_CHECK(err)                                                                            \

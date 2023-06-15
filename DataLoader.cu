@@ -1,8 +1,8 @@
 #include "DataLoader.cuh"
-DataLoader::DataLoader(const std::string& data_path, const int di, bool genXW):dim(di){
+DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     std::string data_name = data_path.substr(data_path.find_last_of("/")+1,-1);
     graph_name = data_name.substr(0, data_name.find(".")); 
-    cpuA = std::make_unique<CSR>();
+    //cpuA = std::make_unique<CSR>();
     std::fstream fin;
     fin.open(data_path,std::ios::in);
     //std::cout<<this->data_path<<std::endl;
@@ -13,36 +13,35 @@ DataLoader::DataLoader(const std::string& data_path, const int di, bool genXW):d
     std::getline(fin,line);
     std::stringstream ss1(line);
     while(std::getline(ss1,word,',')){
-        cpuA->row.push_back(std::stoi(word));        
+        rowPtr.push_back(std::stoi(word));        
     }
     
     std::getline(fin,line);
     std::stringstream ss2(line);
     while(std::getline(ss2,word,',')){
-        cpuA->col.push_back(std::stoi(word));        
+        col.push_back(std::stoi(word));        
     }
     
     if (data_name == "amazon.csv"){
         // amazon.csv only contains row offset and col indice
         fin.close(); 
-        std::cout<<"Amazon n = "<<cpuA->row.size()-1<<std::endl;
-        std::cout<<"Amazon nnz = "<<cpuA->col.size()<<std::endl;
-        for (size_t i=0; i<cpuA->col.size(); ++i){
-            cpuA->vals.push_back((float)rand()/RAND_MAX/100);        
+        std::cout<<"Amazon n = "<<rowPtr.size()-1<<std::endl;
+        std::cout<<"Amazon nnz = "<<col.size()<<std::endl;
+        for (size_t i=0; i<col.size(); ++i){
+            vals.push_back((float)rand()/RAND_MAX/100);        
         }
     }else{
         std::getline(fin,line);
         std::stringstream ss3(line);
         while(std::getline(ss3,word,',')){
-            cpuA->vals.push_back(std::stof(word));        
+            vals.push_back(std::stof(word));        
         }
         fin.close(); 
     }
-    assert(cpuA->col.size()==cpuA->vals.size());
-    n = cpuA->row.size()-1; 
-    cpuA->r = cpuA->row.size()-1; 
-    cpuA->c = cpuA->row.size()-1; 
-    cpuA->nnz = cpuA->col.size();
+    assert(col.size()==vals.size());
+    m = rowPtr.size()-1; 
+    n = m;
+    nnz = col.size();
 
     if (data_name == "polblogs.csv"){
         c = 2; 
@@ -67,66 +66,44 @@ DataLoader::DataLoader(const std::string& data_path, const int di, bool genXW):d
         //exit(0);
         c = 100;
     }
-    gpuA = std::make_unique<dCSR>();
-    if (genXW){
-        if (alloc()){
-            //LOG(INFO) << "Initialize X & W ...";
-            printf("%d of %s, Initialize X & W ...",__LINE__,__FILE__);
-            for (int i=0; i<n*dim; ++i){
-                //cpuX[i] = (float)rand()/RAND_MAX;
-                cpuX[i] = 1;
-            }
-            for (int i=0; i<c*dim; ++i){
-                cpuW[i] = (float)rand()/RAND_MAX;
-            }
-            //LOG(INFO) << "X & W initialized ...";
-            //print_data();
-            transfer();
-        } 
+    //gpuA = std::make_unique<dCSR>();
+#ifdef AXW
+    //LOG(INFO) << "Initialize X & W ...";
+    //printf("%d of %s, Initialize X & W ...",__LINE__,__FILE__);
+    for (int i=0; i<c*dim; ++i){
+        cpuW.push_back((float)rand()/RAND_MAX);
     }
-}
-
-bool DataLoader::transfer(){
-    //LOG(INFO) << "Transfer A, X & W to gpu ...";
-    CUDA_CHECK(cudaMemcpy(gpuA->row, cpuA->row.data(), sizeof(unsigned int)*(cpuA->r+1), cudaMemcpyHostToDevice));
-    //LOG(INFO) << "Transfer A row ...";
-    CUDA_CHECK(cudaMemcpy(gpuA->col, cpuA->col.data(), sizeof(unsigned int)*cpuA->nnz, cudaMemcpyHostToDevice));
-    //LOG(INFO) << "Transfer A, col ...";
-    CUDA_CHECK(cudaMemcpy(gpuA->vals, cpuA->vals.data(), sizeof(float)*cpuA->nnz, cudaMemcpyHostToDevice));
-    
-    //LOG(INFO) << "Transfer A, X & W to gpu ...";
-    CUDA_CHECK(cudaMemcpy(gpuX, &cpuX[0], sizeof(float)*n*dim, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(gpuW, &cpuW[0], sizeof(float)*dim*c, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(gpuC, 0, sizeof(float)*n*c));
-    //CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(T)*n*c));
-    CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(float)*n*dim));
-    CUDA_CHECK(cudaMemset(gpuRef2, 0, sizeof(float)*n*c));
-    //LOG(INFO) << "A, X & W have transfered to gpu ...";
-    return true;
-}
-
-bool DataLoader::alloc(){
-    cpuX = std::make_unique<float []>(n*dim);
-    cpuW = std::make_unique<float []>(c*dim);
-    cpuC = std::make_unique<float []>(n*c);
-    cpuRef1 = std::make_unique<float []>(n*c);
-    cpuRef2 = std::make_unique<float []>(n*c);
-    //memset(cpuC, 0, sizeof(T)*n*c);
-
-    CUDA_CHECK(cudaMalloc(&(gpuA->row), sizeof(unsigned int) * (cpuA->r+1)));
-    CUDA_CHECK(cudaMalloc(&(gpuA->col), sizeof(unsigned int) * (cpuA->nnz)));
-    CUDA_CHECK(cudaMalloc(&(gpuA->vals), sizeof(float) * (cpuA->nnz)));
-    
-    CUDA_CHECK(cudaMalloc(&gpuX, sizeof(float) * n * dim));
     CUDA_CHECK(cudaMalloc(&gpuW, sizeof(float) * c * dim));
-    CUDA_CHECK(cudaMalloc(&gpuC, sizeof(float) * c * n));
-    //CUDA_CHECK(cudaMalloc(&gpuRef1, sizeof(T) * c * n));
-    CUDA_CHECK(cudaMalloc(&gpuRef1, sizeof(float) * dim * n));
+    CUDA_CHECK(cudaMemcpy(gpuW, cpuW, sizeof(float)*dim*c, cudaMemcpyHostToDevice));
+      
+    CUDA_CHECK(cudaMalloc(&gpuRef1, sizeof(float) * c * n));
+    CUDA_CHECK(cudaMemset(gpuRef1, 0, sizeof(float)*n*c));
+    
     CUDA_CHECK(cudaMalloc(&gpuRef2, sizeof(float) * c * n));
-    return true;
+    CUDA_CHECK(cudaMemset(gpuRef2, 0, sizeof(float)*n*c));
+#endif
+    CUDA_CHECK(cudaMalloc(&rowPtr_dev, sizeof(unsigned int) * (m+1)));
+    CUDA_CHECK(cudaMemcpy(rowPtr_dev, rowPtr.data(), sizeof(unsigned int)*(n+1), cudaMemcpyHostToDevice));
+    
+    CUDA_CHECK(cudaMalloc(&col_dev, sizeof(unsigned int) * nnz));
+    CUDA_CHECK(cudaMemcpy(col_dev, col.data(), sizeof(unsigned int)*nnz, cudaMemcpyHostToDevice));
+    
+    CUDA_CHECK(cudaMalloc(&vals_dev, sizeof(float) * nnz)); 
+    CUDA_CHECK(cudaMemcpy(vals_dev, vals.data(), sizeof(float)*nnz, cudaMemcpyHostToDevice));
+    
+    CUDA_CHECK(cudaMalloc(&gpuC, sizeof(float) * dim * m));
+    CUDA_CHECK(cudaMemset(gpuC, 0, sizeof(float)*m*dim));
+    
+    for (int i=0; i<n*dim; ++i){
+        //cpuX[i] = (float)rand()/RAND_MAX;
+        cpuX.push_back(1.0);
+    }
+    CUDA_CHECK(cudaMalloc(&gpuX, sizeof(float) * n * dim));
+    CUDA_CHECK(cudaMemcpy(gpuX, cpuX.data(), sizeof(float)*n*dim, cudaMemcpyHostToDevice));
 }
+
 bool DataLoader::compare(){
-    for (size_t i=0; i<n*c; ++i){
+    for (size_t i=0; i<m*c; ++i){
         if (abs(cpuRef1[i]-cpuRef2[i])>=0.1){
             std::cout<<"Ref1["<<i<<"]="<<std::setprecision(12)<<cpuRef1[i]<<" / "<<"Ref2["<<i<<"]="<<std::setprecision(12)<<cpuRef2[i]<<std::endl;
             return false;
@@ -139,32 +116,32 @@ bool DataLoader::compare(){
 void DataLoader::print_data(){
     //LOG(INFO) << "print start.";
     std::cout<<"The first 5 elements of rowptr: ";
-    for(auto it=cpuA->row.begin(); it<cpuA->row.begin()+5; it++)
+    for(auto it=rowPtr.begin(); it<rowPtr.begin()+5; it++)
         std::cout<<(*it)<<" ";
     std::cout<<std::endl;
 
     std::cout<<"The last 5 elements of rowptr: ";
-    for(auto it=cpuA->row.end()-5; it!=cpuA->row.end() ; it++)
+    for(auto it=rowPtr.end()-5; it!=rowPtr.end() ; it++)
         std::cout<<(*it)<<" ";
     std::cout<<std::endl;
 
     std::cout<<"The first 5 elements of indies: ";
-    for(auto it=cpuA->col.begin(); it<cpuA->col.begin()+5 ; it++)
+    for(auto it=col.begin(); it<col.begin()+5 ; it++)
         std::cout<<(*it)<<" ";
     std::cout<<std::endl;
 
     std::cout<<"The last 5 elements of indies: ";
-    for(auto it=cpuA->col.end()-5; it!=cpuA->col.end() ; it++)
+    for(auto it=col.end()-5; it!=col.end() ; it++)
         std::cout<<(*it)<<" ";
     std::cout<<std::endl;
 
     std::cout<<"The first 5 elements of vals: ";
-    for(auto it=cpuA->vals.begin(); it<cpuA->vals.begin()+5 ; it++)
+    for(auto it=vals.begin(); it<vals.begin()+5 ; it++)
         std::cout<<(*it)<<" ";
     std::cout<<std::endl;
 
     std::cout<<"The last 5 elements of vals: ";
-    for(auto it=cpuA->vals.end()-5; it!=cpuA->vals.end() ; it++)
+    for(auto it=vals.end()-5; it!=vals.end() ; it++)
         std::cout<<(*it)<<" ";
     std::cout<<std::endl;
     
@@ -173,10 +150,10 @@ void DataLoader::print_data(){
         std::cout<<cpuX[it]<<" ";
     std::cout<<std::endl;
     
-    std::cout<<"The first 5 elements of W: ";
-    for(auto it=0; it<5 ; it++)
-        std::cout<<cpuW[it]<<" ";
-    std::cout<<std::endl;
+    //std::cout<<"The first 5 elements of W: ";
+    //for(auto it=0; it<5 ; it++)
+    //    std::cout<<cpuW[it]<<" ";
+    //std::cout<<std::endl;
     
     std::cout<<std::endl;
     //std::cout<<"The number of nodes: "<< get_nodes()<<"   Rowptr: "<<data.at(0).size()<<"   Pointer: "<<data.at(1).size()<<std::endl;

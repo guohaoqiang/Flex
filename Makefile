@@ -6,7 +6,7 @@ NP_ROOT = $(GP_ROOT)/lib
 
 DEFAULT: flex
 
-SRC_FILES = mat.cc main.cc flex.cu DataLoader.cu
+SRC_FILES = mat.cu main.cu flex.cu DataLoader.cu
 OBJ_FILES = $(addsuffix .o,$(basename $(SRC_FILES)))
 
 CXX = g++
@@ -78,7 +78,7 @@ endif
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
 %.o: %.cu Makefile
-	$(NVXX) -c $< -o $@ $(NVXXFLAGS)
+	$(NVXX) -c $< -o $@ $(NVXXFLAGS) -rdc=true
 
 flex: $(OBJ_FILES)
 	$(NVXX) -o $@ $^ $(NVXXFLAGS) $(LINKFLAGS)

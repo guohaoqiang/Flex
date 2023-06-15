@@ -2,13 +2,10 @@
 #define FLEX_H 
 #include <iostream>
 #include <fstream>
-#include <gp/cuda-gpuinfo.h>
 //#include <gp/misc.h>
-#include <gp/ptable.h>
-#include <nperf.h>
 #include "common.h"
 #include "DataLoader.cuh"
-#include "mat.h"
+#include "mat.cuh"
 #include "flex_spmm.cuh"
 //#define OUTPUTCSV
 
@@ -57,11 +54,7 @@ void run_test(float* h_res_c,
                 Perfs& perfRes);
 */
 void run(DataLoader& input);
-void cuSpgemm(DataLoader& input, Perfs& perfRes);
-
-template<typename MT, int tm, int tn>
-void flexspgemm(float* h_res_c, MT& data, const float* mat_b, Perfs& perfRes);
-
+void cuSpmm(DataLoader& input, Perfs& perfRes);
 
 template<typename TP>
 void print(vector<TP>& arr){

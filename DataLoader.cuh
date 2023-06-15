@@ -1,6 +1,5 @@
 #ifndef DATALOADER_H
 #define DATALOADER_H 
-//#include <glog/logging.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -11,49 +10,46 @@
 #include <assert.h>
 #include <iomanip>
 #include "common.h"
-//#define T float
-class CSR
-{
-public:
-    std::vector<unsigned int> row;
-    std::vector<unsigned int> col;
-    std::vector<float> vals;
-    size_t nnz, r, c;
-};
-
-class dCSR
-{
-public:
-    unsigned int *row = nullptr;
-    unsigned int *col = nullptr;
-    float *vals = nullptr;
-    size_t nnz, r, c;
-};
-
 class DataLoader{
 public:
-    DataLoader(const std::string& st, const int di, bool genXW = true);
+    DataLoader(const std::string& st, const int di);
     
-    bool transfer();
-    bool alloc();
+    std::vector<unsigned int> rowPtr;
+    std::vector<unsigned int> col;
+    std::vector<float> vals;
+    
     bool compare();
     void print_data();
     
-    std::unique_ptr<CSR> cpuA; // n * n 
-	std::unique_ptr<float[]> cpuX; // n * dim
-	std::unique_ptr<float[]> cpuW; // dim * c
-	std::unique_ptr<float[]> cpuC; // n * c
-	std::unique_ptr<float[]> cpuRef1; // n * c
-	std::unique_ptr<float[]> cpuRef2; // n * c
+    std::vector<float> cpuX; // n * dim
+    std::vector<float> cpuW; // dim * c
+	std::vector<float> cpuC; // n * c
+	std::vector<float> cpuRef1; // n * c
+	std::vector<float> cpuRef2; // n * c
     
-    std::unique_ptr<dCSR> gpuA;
+    unsigned int *rowPtr_dev = nullptr;
+    unsigned int *col_dev = nullptr;
+    float *vals_dev = nullptr;
+    
     float *gpuX = nullptr;
     float *gpuW = nullptr;
     float *gpuC = nullptr;
     float *gpuRef1 = nullptr;
     float *gpuRef2 = nullptr;
 
-    size_t n, dim, c;
+    size_t m, n, dim, c, nnz;
     std::string graph_name;
+    void freemem(){
+        cudaFree(rowPtr_dev);
+        cudaFree(col_dev);
+        cudaFree(vals_dev);
+        cudaFree(gpuX); 
+        cudaFree(gpuC); // C = AX
+#ifdef AXW
+        cudaFree(gpuW);
+        cudaFree(gpuRef1);
+        cudaFree(gpuRef2);
+#endif
+    }
 };
 #endif /* DATALOADER_H */

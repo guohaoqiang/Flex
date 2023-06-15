@@ -11,10 +11,10 @@ int main(int argc, char *argv[])
     //DataLoader data(FLAGS_input, FLAGS_dim);
     DataLoader data(argv[1], atoi(argv[2]));
     std::cout<<"Graph name: "<<data.graph_name<<std::endl;
-    std::cout<<"A: "<<data.cpuA->r<<"*"<<data.cpuA->c<<"  X: "<<data.n<<"*"<<data.dim<<"   W: "<<data.dim<<"*"<<data.c<<std::endl;
-    std::cout<<"NNZ of A: "<<data.cpuA->nnz<<std::endl;
+    std::cout<<"A: "<<data.n<<"*"<<data.n<<"  X: "<<data.n<<"*"<<data.dim<<"   W: "<<data.dim<<"*"<<data.c<<std::endl;
+    std::cout<<"NNZ of A: "<<data.nnz<<std::endl;
 #ifdef AXW
-    // AXW test is out of use currently when perform spgemm
+    // AXW test is out of use currently when perform spmm
     int WarmupIterations  = 5;
     int ExecutionIterations = 10;
     Metrics baselinemetrics1, baselinemetrics2, benchmetrics;
@@ -59,14 +59,14 @@ int main(int argc, char *argv[])
     std::cout<<"        "<< baselinemetrics1.t*(1e-3)/ExecutionIterations << " s"<<std::endl;
     std::cout<<"        "<< baselinemetrics1.flops/(baselinemetrics1.t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl;
     std::cout<<"   gemm:"<< baselinemetrics1.gemm_t*(1e-3)/ExecutionIterations << " s   "<< baselinemetrics1.gemm_flops/(baselinemetrics1.gemm_t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl; 
-    std::cout<<" spgemm:"<< baselinemetrics1.spgemm_t*(1e-3)/ExecutionIterations << " s   "<<baselinemetrics1.spgemm_flops/(baselinemetrics1.spgemm_t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl; 
+    std::cout<<" spmm:"<< baselinemetrics1.spmm_t*(1e-3)/ExecutionIterations << " s   "<<baselinemetrics1.spmm_flops/(baselinemetrics1.spmm_t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl; 
     //std::cout<<"(AX)W: "<< baselinemetrics2.flops/(baselinemetrics2.t/ExecutionIterations)/(1e+6) << " Gflops/s"<<std::endl;
     std::cout<<"(AX)W: "<<std::endl;
     std::cout<<"       "<< baselinemetrics2.flops/(1e+6) << " Mflops"<<std::endl;
     std::cout<<"       "<< baselinemetrics2.t*(1e-3)/ExecutionIterations << " s"<<std::endl;
     std::cout<<"       "<< baselinemetrics2.flops/(baselinemetrics2.t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl;
     std::cout<<"   gemm:"<< baselinemetrics2.gemm_t*(1e-3)/ExecutionIterations << " s   "<< baselinemetrics2.gemm_flops/(baselinemetrics2.gemm_t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl; 
-    std::cout<<" spgemm:"<< baselinemetrics2.spgemm_t*(1e-3)/ExecutionIterations << " s   "<< baselinemetrics2.spgemm_flops/(baselinemetrics2.spgemm_t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl; 
+    std::cout<<" spmm:"<< baselinemetrics2.spmm_t*(1e-3)/ExecutionIterations << " s   "<< baselinemetrics2.spmm_flops/(baselinemetrics2.spmm_t*(1e-3)/ExecutionIterations)/(1e+9) << " Gflops/s"<<std::endl; 
     //std::cout<<"AXW: "<< benchmetrics.flops/benchmetrics.t << "Gflops/s"<<std::endl;
 #endif
 #ifndef AXW
