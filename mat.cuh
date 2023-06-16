@@ -35,6 +35,7 @@ class Mat : public Mat_POD{
     Mat(DataLoader& mat, int tileh, int tilew);
 	void print1();
 	void print2();
+    void stats_collect(bool print);
     
 	void csr2tile();
 
@@ -58,6 +59,11 @@ class Mat : public Mat_POD{
     int rcOffset_bytes;
     int mat_b_bytes;
     int mat_c_bytes;
+
+  // Statistics
+  std::vector<uint> tile_p_row_histo;  // Histogram of number of tiles per row.
+  std::vector<uint> tile_nnz_histo;    // Histogram of number of nz per tile.
+  int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
 
 	void csr2flex(int i);
     void transfer(float*);

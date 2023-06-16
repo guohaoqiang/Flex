@@ -1,4 +1,14 @@
 #include "mat.cuh"
+#include <bit>
+
+template<typename T, typename T2>
+bool set_max(T& accum, const T2& v)
+{
+  if ( v <= accum ) return false;
+  accum = v;
+  return true;
+}
+
 __constant__ Mat_POD mat_dev;
 
 Mat::Mat(DataLoader& input, int tileh,int tilew)
@@ -156,6 +166,59 @@ void Mat::csr2flex(int ridx){
 	}
 	tileRowPtr.push_back(tileRowPtr.back()+tiles_in_cur_row);
 }
+
+
+void
+Mat::stats_collect(bool print)
+{
+  const uint tmn = tm * tn;
+
+  const uint tile_m = ( m + tm - 1 ) / tm;
+  const uint tile_n = ( n + tn - 1 ) / tn;
+  tile_p_row_histo.resize(tile_n+1);
+  uint max_n_tiles = 0;
+  for ( uint tile_r = 0;  tile_r < tile_m;  tile_r++ )
+    {
+      const uint n_tiles = tileRowPtr[tile_r+1] - tileRowPtr[tile_r];
+      assert( n_tiles <= tile_n );
+      set_max( max_n_tiles, n_tiles );
+      tile_p_row_histo[n_tiles]++;
+    }
+  tile_p_row_histo.resize(max_n_tiles+1);
+  const uint n_tiles = nnzTile.size();
+  tile_nnz_histo.resize(tmn+1);
+  n_col_sum = 0;
+  uint max_t_nnz = 0;
+  for ( uint t_idx = 0; t_idx < n_tiles; t_idx++ )
+    {
+      const auto nnz = nnzTile[t_idx];
+      tile_nnz_histo[nnz]++;
+      set_max( max_t_nnz, nnz );
+      const uint n_col = popcount(uint(bitMap[t_idx]));
+      n_col_sum += n_col;
+    }
+  tile_nnz_histo.resize(max_t_nnz+1);
+
+  if ( !print ) return;
+
+  printf("Arrays m=%d, n=%d, k=%d. Tile %d × %d.   nnz=%d  Avg deg=%.1f\n",
+         m, n, k, tm, tn, nnz, double(nnz)/m);
+
+  printf("nnz / tile: %.3f  Load / B elt  %.3f\n",
+         double(nnz) / n_tiles,
+         n_col_sum / double(nnz) );
+  int n_t_hist_pr = 0;
+  printf("Tile nnz histogram: (n_tiles %d)\n",n_tiles);
+  for ( uint i=0; i<tile_nnz_histo.size(); i++ )
+    if ( auto tnnz = tile_nnz_histo[i]; tnnz )
+      {
+        if ( n_t_hist_pr++ > 6 ) break;
+        printf("%3d %5.2f%%, ", i, tnnz * 100.0 / n_tiles);
+      }
+  printf("\n");
+}
+
+
 void Mat::print2(){
 #ifdef DEBUG
     for (int i=0; i<tileRowPtr.size(); ++i)

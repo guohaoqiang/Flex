@@ -24,7 +24,7 @@ COMMON_FLAGS = -Wall -Wno-parentheses -Wno-sign-compare -march=native
 
 # Used only by nvcc.
 #
-CUCC_ONLY_FLAGS = -std c++14 -arch native
+CUCC_ONLY_FLAGS = -std c++20 -arch native
 # Turing:2080 super: -arch sm_75
 # Ampere:3080,3090: -arch sm_86
 # Ada: 4090: -arch sm_89
@@ -32,7 +32,7 @@ CUCC_ONLY_FLAGS = -std c++14 -arch native
 
 # Used only by g++
 #
-CXX_ONLY_FLAGS = -std=c++14
+CXX_ONLY_FLAGS = -std=c++20
 
 LINKFLAGS = -lpthread -lcudart -lcusparse -lcublas
 
@@ -74,11 +74,18 @@ endif
 	 rm -f $@.$$$$
 
 
+SASS_FILTER = $(GP_ROOT)/util/sass-filter --show-source-code
+CUDUMP = $(CUDA_ROOT_DIR)/bin/nvdisasm
+CUDUMPFLAGS = --print-code --print-line-info
+
 %.o: %.cc Makefile
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
 
 %.o: %.cu Makefile
 	$(NVXX) -c $< -o $@ $(NVXXFLAGS) -rdc=true
+	# $(NVXX) $(NVXXFLAGS) -rdc=true -lineinfo -cubin $*.cu -o $*.cubin
+	# $(CUDUMP) $(CUDUMPFLAGS) $*.cubin | $(SASS_FILTER) > $*.sass
+
 
 flex: $(OBJ_FILES)
 	$(NVXX) -o $@ $^ $(NVXXFLAGS) $(LINKFLAGS)

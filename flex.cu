@@ -192,7 +192,13 @@ void run(DataLoader& input){
     NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
     NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_local_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_shared_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_local_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_shared_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_global_st.sum");
     NPerf_metric_collect
         ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed");
     NPerf_metric_collect
@@ -334,19 +340,21 @@ void run(DataLoader& input){
         SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 27, NBX, NBY, NT);
 #endif
 
+    cudaEvent_t spgemm_start, spgemm_stop;
+    cudaEventCreate(&spgemm_start);
+    cudaEventCreate(&spgemm_stop);
+
     pTable table(stdout);
     for( int id=0; id<kernels.size(); ++id ){
         
+      Mat& mat = spMats[id];
         spMats[id].csr2tile();
+        mat.stats_collect( mat.tn == 4 && mat.tm == 4 );
         spMats[id].transfer(input.cpuX.data());
         spMats[id].dataVolume_est();
         spMats[id].launch_prep();
         
         constexpr int wp_sz = 32;
-        // Get measured number of instructions executed.
-        //
-        const double n_insn =
-            NPerf_metric_value_get("sm__inst_executed.sum") * wp_sz;
         pTable_Row row(table);
         // Compute the expected number of multiply/add instructions.
         //
@@ -361,9 +369,6 @@ void run(DataLoader& input){
         int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
         float spgemm_duration;
         float elap_t = 0; 
-        cudaEvent_t spgemm_start, spgemm_stop;
-        cudaEventCreate(&spgemm_start);
-        cudaEventCreate(&spgemm_stop);
         cudaEventRecord(spgemm_start);
         for ( NPerf_data_reset(); NPerf_need_run_get(); ){
             KPtr(ki->func_ptr)<<<gridx,threads>>>();
@@ -378,6 +383,14 @@ void run(DataLoader& input){
             ("Tile", "%-6s",
              to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
 
+          table.entry
+            ("T1%", "%5.2f",
+             double(mat.tile_nnz_histo[1])*100.0/mat.nnzTile.size());
+
+          table.entry
+            ("B-Re", "%4.2f",
+             double(mat.nnz) / mat.n_col_sum);
+
           // Get and print elapsed time.
           //
           const double et_seconds = NPerf_kernel_et_get();
@@ -389,14 +402,45 @@ void run(DataLoader& input){
 
           table.header_span_start("Num Insns");
 
+          table.header_span_start("Load");
+
           table.entry
-            ( "Load", "%4.1f",
+            ( "All", "%4.1f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_ld.sum")
               / n_madd_p_wp );
           table.entry
-            ( "Store", "%5.2f",
+            ( "G", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "L", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_local_ld.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "S", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_shared_ld.sum")
+              / n_madd_p_wp );
+          table.header_span_end();
+
+          table.header_span_start("Store");
+          table.entry
+            ( "All", "%5.2f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_st.sum")
               / n_madd_p_wp );
+          table.entry
+            ( "G", "%4.2f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_global_st.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "L", "%3.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_local_st.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "S", "%3.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_shared_st.sum")
+              / n_madd_p_wp );
+          table.header_span_end();
+
           table.entry
             ( "All", "%5.1f",
               NPerf_metric_value_get("sm__inst_executed.sum")
