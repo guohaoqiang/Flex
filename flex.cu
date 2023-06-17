@@ -383,13 +383,29 @@ void run(DataLoader& input){
             ("Tile", "%-6s",
              to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
 
-          table.entry
-            ("T1%", "%5.2f",
-             double(mat.tile_nnz_histo[1])*100.0/mat.nnzTile.size());
+          const int64_t n_tiles = mat.nnzTile.size();
 
           table.entry
-            ("B-Re", "%4.2f",
-             double(mat.nnz) / mat.n_col_sum);
+            ("T1%", "%5.2f", double(mat.tile_nnz_histo[1])*100.0/n_tiles);
+
+          const double nz_p_t = double(mat.nnz) / n_tiles;
+
+          table.entry("nz/t", "%5.2f", nz_p_t);
+
+          const double n_t_rows = double(mat.m) / mat.tm;
+
+          const double nz_p_tr = double(mat.nnz) / n_t_rows;
+
+          if ( false ) table.entry("nz/tr", "%5.0f", nz_p_tr);
+
+          const double t_p_tr = n_tiles / n_t_rows;
+
+          table.entry("t/tr", "%4.0f", t_p_tr);
+
+          // Number of nz per occupied tile column.
+          const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
+
+          table.entry("B-Re", "%4.2f", nz_p_toc);
 
           // Get and print elapsed time.
           //
@@ -408,10 +424,24 @@ void run(DataLoader& input){
             ( "All", "%4.1f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_ld.sum")
               / n_madd_p_wp );
+
+          const int n_ld_trow = 2;  // Loads per tile row. tileRowPtr (two)
+          const int n_ld_tile = 4;  // Loads per tile.
+          const int n_ld_nz = 2;    // Loads per nz. ( rc, edge weight)
+          const int n_ld_b_elt = 1; // Loads per B matrix element.
+          const double n_ld_p_nz =
+            n_ld_trow / nz_p_tr
+            + n_ld_tile / nz_p_tr * ceil(t_p_tr/32)
+            + n_ld_nz / nz_p_t
+            + n_ld_b_elt / nz_p_toc;
+
           table.entry
             ( "G", "%4.1f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
               / n_madd_p_wp );
+
+          table.entry( "GC", "%4.1f", n_ld_p_nz);
+
           table.entry
             ( "L", "%4.1f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_local_ld.sum")
@@ -455,11 +485,19 @@ void run(DataLoader& input){
               NPerf_metric_value_get("sm__cycles_elapsed.max") * fp32_per_chip
               / n_madd );
 
-          table.header_span("L1←L2",1);
+          table.header_span_start("L1←L2");
           table.entry
             ( "Bytes", "%5.2f",
               NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
-                / spMats[id].est_ld_bytes );
+                / n_madd );
+
+          const double n_bytes =
+            4 * ( n_t_rows * n_ld_trow
+                  + n_tiles * n_ld_tile
+                  + mat.nnz * n_ld_nz
+                  + mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
+          table.entry( "BC", "%5.2f", n_bytes / n_madd );
+          table.header_span_end();
 
           table.header_span_end();
 
@@ -492,10 +530,11 @@ void run(DataLoader& input){
 
           table.header_span_end();
 
+          if ( true ) {
           table.header_span( "FP Thpt", 1);
           table.entry( "GFLOP/s", "%9.1f", 1e-9 * n_madd / et_seconds );
-
           table.header_span_end();
+          }
         
         // transfer data to host
         cudaMemcpy(h_res_c, spMats[id].mat_c_dev, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyDeviceToHost);
