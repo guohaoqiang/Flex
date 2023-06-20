@@ -350,6 +350,10 @@ void run(DataLoader& input){
       Mat& mat = spMats[id];
         spMats[id].csr2tile();
         mat.stats_collect( mat.tn == 4 && mat.tm == 4 );
+        if ( mat.tn == 4 && mat.tm == 4 ){
+           printf("cuSpmm setup/µs: %.2f , prosessing/µs: %.2f, total/µs: %.2f\n",
+                   perfRes.cuSpmmSetup,perfRes.cuSpmmProcessing,perfRes.cuSpmm_time); 
+        }
         spMats[id].transfer(input.cpuX.data());
         spMats[id].dataVolume_est();
         spMats[id].launch_prep();
@@ -369,11 +373,12 @@ void run(DataLoader& input){
         int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
         float spgemm_duration;
         float elap_t = 0; 
-        cudaEventRecord(spgemm_start);
+        cudaEventRecord(spgemm_start,0);
         for ( NPerf_data_reset(); NPerf_need_run_get(); ){
             KPtr(ki->func_ptr)<<<gridx,threads>>>();
         }
-        cudaEventRecord(spgemm_stop);
+        cudaEventRecord(spgemm_stop,0);
+        cudaEventSynchronize(spgemm_start);
         cudaEventSynchronize(spgemm_stop);
         cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
         elap_t += spgemm_duration; 
@@ -385,6 +390,8 @@ void run(DataLoader& input){
 
           const int64_t n_tiles = mat.nnzTile.size();
 
+          table.entry( "Event/µs", "%8.2f", elap_t * 1e3 );
+          
           table.entry
             ("T1%", "%5.2f", double(mat.tile_nnz_histo[1])*100.0/n_tiles);
 
@@ -410,7 +417,7 @@ void run(DataLoader& input){
           // Get and print elapsed time.
           //
           const double et_seconds = NPerf_kernel_et_get();
-          table.entry( "t/µs", "%4.0f", et_seconds * 1e6 );
+          table.entry( "t/µs", "%8.2f", et_seconds * 1e6 );
 
           // Write a heading that will span multiple columns.
           //
@@ -565,10 +572,14 @@ void run(DataLoader& input){
 }
 void cuSpmm(DataLoader& input, Perfs& perfRes){
     float elap_t = 0.0;
-    float cuspmm_duration;
-    cudaEvent_t cuspmm_start, cuspmm_stop;
-	cudaEventCreate(&cuspmm_start);
-	cudaEventCreate(&cuspmm_stop); 
+    float cuSpmmSetup_duration = 0.0;
+    float cuSpmmProcessing_duration = 0.0;
+    cudaEvent_t cuSpmmSetup_start, cuSpmmSetup_stop;
+    cudaEvent_t cuSpmmProcessing_start, cuSpmmProcessing_stop;
+	cudaEventCreate(&cuSpmmSetup_start);
+	cudaEventCreate(&cuSpmmSetup_stop); 
+	cudaEventCreate(&cuSpmmProcessing_start);
+	cudaEventCreate(&cuSpmmProcessing_stop); 
     
     const float alpha = 1.0;
     const float beta = 0.0;
@@ -579,7 +590,7 @@ void cuSpmm(DataLoader& input, Perfs& perfRes){
     void*                dBuffer    = NULL;
     size_t               bufferSize = 0;
     
-    //cudaEventRecord(cuspmm_start);
+    cudaEventRecord(cuSpmmSetup_start,0);
     
     CHECK_CUSPARSE( cusparseCreate(&handle) )
     // Create sparse matrix A in CSR format
@@ -602,10 +613,11 @@ void cuSpmm(DataLoader& input, Perfs& perfRes){
                                  CUSPARSE_SPMM_CSR_ALG3, &bufferSize) )
     CHECK_CUDA( cudaMalloc(&dBuffer, bufferSize) )
     
-    //cudaEventRecord(cuspmm_stop);
-    //cudaEventSynchronize(cuspmm_stop);
-    //cudaEventElapsedTime(&cuspmm_duration, cuspmm_start, cuspmm_stop);
-    //elap_t += cuspmm_duration;
+    cudaEventRecord(cuSpmmSetup_stop,0);
+    cudaEventSynchronize(cuSpmmSetup_start);
+    cudaEventSynchronize(cuSpmmSetup_stop);
+    cudaEventElapsedTime(&cuSpmmSetup_duration, cuSpmmSetup_start, cuSpmmSetup_stop);
+    perfRes.cuSpmmSetup = cuSpmmSetup_duration * (1e3);  // in microsecond
 
     // warm-up
     for (int i=0; i<5; ++i){
@@ -616,7 +628,7 @@ void cuSpmm(DataLoader& input, Perfs& perfRes){
                                  CUSPARSE_SPMM_CSR_ALG3, dBuffer))
     }
     // execute SpMM
-    cudaEventRecord(cuspmm_start);
+    cudaEventRecord(cuSpmmProcessing_start,0);
     for (int i=0; i<10; ++i){
         CHECK_CUSPARSE(cusparseSpMM(handle,
                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
@@ -624,18 +636,20 @@ void cuSpmm(DataLoader& input, Perfs& perfRes){
                                  &alpha, matA, matB, &beta, matC, CUDA_R_32F,
                                  CUSPARSE_SPMM_CSR_ALG3, dBuffer))
     }
-    cudaEventRecord(cuspmm_stop);
-    cudaEventSynchronize(cuspmm_stop);
-    cudaEventElapsedTime(&cuspmm_duration, cuspmm_start, cuspmm_stop);
-    elap_t += cuspmm_duration;
-    float t = elap_t*(1e-3)/10;
-    perfRes.cuspmm_time = t;
+    cudaEventRecord(cuSpmmProcessing_stop,0);
+    cudaEventSynchronize(cuSpmmProcessing_start);
+    cudaEventSynchronize(cuSpmmProcessing_stop);
+    cudaEventElapsedTime(&cuSpmmProcessing_duration, cuSpmmProcessing_start, cuSpmmProcessing_stop);
+    elap_t += cuSpmmProcessing_duration;
+    float t = elap_t*(1e3)/10; // microsecond
+    perfRes.cuSpmmProcessing = t;
+    perfRes.cuSpmm_time = cuSpmmSetup_duration*(1e3) + t;
     
-    float gflops = (2*input.nnz*input.dim)/(1e+9);
-    perfRes.cuspmm_throughput = gflops/t;
+    //float gflops = (2*input.nnz*input.dim)/(1e+9);
+    //perfRes.cuspmm_throughput = gflops/t/(1e-6);
     //std::cout<<"cuSpmm Throughput: "<<gflops/t<<" gflops/s "<<std::endl;
-    float gb = (float)((input.n+1 + 2*input.nnz + 2*input.n*input.dim)*4)/(1e+9);
-    perfRes.cuspmm_bandwidth = gb/t;
+    //float gb = (float)((input.n+1 + 2*input.nnz + 2*input.n*input.dim)*4)/(1e+9);
+    //perfRes.cuspmm_bandwidth = gb/t/(1e-6);
     //std::cout<<"cuSpmm Bandwidth: "<<gb/t<<" GB/s "<<std::endl;
     
     CHECK_CUSPARSE( cusparseDestroySpMat(matA) )

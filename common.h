@@ -37,8 +37,10 @@ struct Metrics {
 
 class Perfs {
 public:
-    Perfs():cuspmm_time(0.0),cuspmm_throughput(0.0),cuspmm_bandwidth(0.0){}
-    float cuspmm_time;
+    Perfs():cuSpmmSetup(0.0),cuSpmmProcessing(0.0),cuSpmm_time(0.0),cuspmm_throughput(0.0),cuspmm_bandwidth(0.0){}
+    float cuSpmmSetup;
+    float cuSpmmProcessing;
+    float cuSpmm_time;
     float cuspmm_throughput;
     float cuspmm_bandwidth;
 
