@@ -192,7 +192,13 @@ void run(DataLoader& input){
     NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
     NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_local_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_shared_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_local_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_shared_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_global_st.sum");
     NPerf_metric_collect
         ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed");
     NPerf_metric_collect
@@ -334,19 +340,21 @@ void run(DataLoader& input){
         SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 27, NBX, NBY, NT);
 #endif
 
+    cudaEvent_t spgemm_start, spgemm_stop;
+    cudaEventCreate(&spgemm_start);
+    cudaEventCreate(&spgemm_stop);
+
     pTable table(stdout);
     for( int id=0; id<kernels.size(); ++id ){
         
+      Mat& mat = spMats[id];
         spMats[id].csr2tile();
+        mat.stats_collect( mat.tn == 4 && mat.tm == 4 );
         spMats[id].transfer(input.cpuX.data());
         spMats[id].dataVolume_est();
         spMats[id].launch_prep();
         
         constexpr int wp_sz = 32;
-        // Get measured number of instructions executed.
-        //
-        const double n_insn =
-            NPerf_metric_value_get("sm__inst_executed.sum") * wp_sz;
         pTable_Row row(table);
         // Compute the expected number of multiply/add instructions.
         //
@@ -361,9 +369,6 @@ void run(DataLoader& input){
         int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
         float spgemm_duration;
         float elap_t = 0; 
-        cudaEvent_t spgemm_start, spgemm_stop;
-        cudaEventCreate(&spgemm_start);
-        cudaEventCreate(&spgemm_stop);
         cudaEventRecord(spgemm_start);
         for ( NPerf_data_reset(); NPerf_need_run_get(); ){
             KPtr(ki->func_ptr)<<<gridx,threads>>>();
@@ -378,6 +383,30 @@ void run(DataLoader& input){
             ("Tile", "%-6s",
              to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
 
+          const int64_t n_tiles = mat.nnzTile.size();
+
+          table.entry
+            ("T1%", "%5.2f", double(mat.tile_nnz_histo[1])*100.0/n_tiles);
+
+          const double nz_p_t = double(mat.nnz) / n_tiles;
+
+          table.entry("nz/t", "%5.2f", nz_p_t);
+
+          const double n_t_rows = double(mat.m) / mat.tm;
+
+          const double nz_p_tr = double(mat.nnz) / n_t_rows;
+
+          if ( false ) table.entry("nz/tr", "%5.0f", nz_p_tr);
+
+          const double t_p_tr = n_tiles / n_t_rows;
+
+          table.entry("t/tr", "%4.0f", t_p_tr);
+
+          // Number of nz per occupied tile column.
+          const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
+
+          table.entry("B-Re", "%4.2f", nz_p_toc);
+
           // Get and print elapsed time.
           //
           const double et_seconds = NPerf_kernel_et_get();
@@ -389,14 +418,59 @@ void run(DataLoader& input){
 
           table.header_span_start("Num Insns");
 
+          table.header_span_start("Load");
+
           table.entry
-            ( "Load", "%4.1f",
+            ( "All", "%4.1f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_ld.sum")
               / n_madd_p_wp );
+
+          const int n_ld_trow = 2;  // Loads per tile row. tileRowPtr (two)
+          const int n_ld_tile = 4;  // Loads per tile.
+          const int n_ld_nz = 2;    // Loads per nz. ( rc, edge weight)
+          const int n_ld_b_elt = 1; // Loads per B matrix element.
+          const double n_ld_p_nz =
+            n_ld_trow / nz_p_tr
+            + n_ld_tile / nz_p_tr * ceil(t_p_tr/32)
+            + n_ld_nz / nz_p_t
+            + n_ld_b_elt / nz_p_toc;
+
           table.entry
-            ( "Store", "%5.2f",
+            ( "G", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
+              / n_madd_p_wp );
+
+          table.entry( "GC", "%4.1f", n_ld_p_nz);
+
+          table.entry
+            ( "L", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_local_ld.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "S", "%4.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_shared_ld.sum")
+              / n_madd_p_wp );
+          table.header_span_end();
+
+          table.header_span_start("Store");
+          table.entry
+            ( "All", "%5.2f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_st.sum")
               / n_madd_p_wp );
+          table.entry
+            ( "G", "%4.2f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_global_st.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "L", "%3.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_local_st.sum")
+              / n_madd_p_wp );
+          table.entry
+            ( "S", "%3.1f",
+              NPerf_metric_value_get("sm__sass_inst_executed_op_shared_st.sum")
+              / n_madd_p_wp );
+          table.header_span_end();
+
           table.entry
             ( "All", "%5.1f",
               NPerf_metric_value_get("sm__inst_executed.sum")
@@ -411,11 +485,19 @@ void run(DataLoader& input){
               NPerf_metric_value_get("sm__cycles_elapsed.max") * fp32_per_chip
               / n_madd );
 
-          table.header_span("L1←L2",1);
+          table.header_span_start("L1←L2");
           table.entry
             ( "Bytes", "%5.2f",
               NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
-                / spMats[id].est_ld_bytes );
+                / n_madd );
+
+          const double n_bytes =
+            4 * ( n_t_rows * n_ld_trow
+                  + n_tiles * n_ld_tile
+                  + mat.nnz * n_ld_nz
+                  + mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
+          table.entry( "BC", "%5.2f", n_bytes / n_madd );
+          table.header_span_end();
 
           table.header_span_end();
 
@@ -448,10 +530,11 @@ void run(DataLoader& input){
 
           table.header_span_end();
 
+          if ( true ) {
           table.header_span( "FP Thpt", 1);
           table.entry( "GFLOP/s", "%9.1f", 1e-9 * n_madd / et_seconds );
-
           table.header_span_end();
+          }
         
         // transfer data to host
         cudaMemcpy(h_res_c, spMats[id].mat_c_dev, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyDeviceToHost);

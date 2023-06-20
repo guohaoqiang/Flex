@@ -1,6 +1,6 @@
 #include "DataLoader.cuh"
 DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
-    std::string data_name = data_path.substr(data_path.find_last_of("/")+1,-1);
+    std::string data_name = data_path.substr(data_path.find_last_of("/")+1);
     graph_name = data_name.substr(0, data_name.find(".")); 
     //cpuA = std::make_unique<CSR>();
     std::fstream fin;
