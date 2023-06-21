@@ -131,6 +131,156 @@ void flexspmm_cuda_wo_pre_v4(){
 		} // end C column loops
 	} // end C row loops
 }
+// args:
+//		tileRowPtr: tile ptr for the 1st tile in each row
+//		tileNnz: ptr for the 1st non zero entry of each tile
+// 		nnzTile: #nnz of each tile
+// 		bitMap: mark B rows required by the each tile
+// 		tileCol: column idx of each tile. 
+//      rcOffset: row and column indexfor each non-zero entry
+//		vals: non-zero entries
+// 		m: height of sparseMat
+// 		n: width of sparseMat
+// 		mat_b: input dense mat
+//		k: width of mat_b
+//		mat_c: output dense mat
+// A: sparse, m * n
+// B: dense, n * k   (k << n)
+template<int tm, int tn, int warps>
+__global__
+void flexspmm_cuda_wo_pre_v5(){
+    const Mat_POD& md = mat_dev;
+	const uint32_t WARPSZ = 32;
+	const uint32_t lane_id = threadIdx.x % WARPSZ;
+    const uint32_t warp_id = threadIdx.x / WARPSZ;
+	//const uint32_t warps = (blockDim.x + WARPSZ - 1)/WARPSZ;
+
+	// now we restrain "tn" in {4,8,16,32}
+	__shared__ float curB[warps][tn*32]; // 2 warps && each warp needs tn*8*4 matB float entries
+	float res[tm];
+	#pragma unroll
+	for (int i=0; i<tm; ++i){
+		res[i] = 0;
+	}
+
+	int computeWidth = 1; // # of C entries to be computed by a thread
+	int tileRows_perBlk = 1; // # row tiles per block
+	for (int row_idx=blockIdx.x*tileRows_perBlk; row_idx<(md.m+tm-1)/tm; row_idx += (gridDim.x*tileRows_perBlk)){ // over C rows
+	   
+        int tile_curR_id = 0, tile_nxtR_id = 0;
+        tile_curR_id = md.tileRowPtr_dev[row_idx]; 
+        tile_nxtR_id = md.tileRowPtr_dev[row_idx+1]; 
+
+        for (int col_idx=warp_id*(32*computeWidth); col_idx<md.k; col_idx += warps*(32*computeWidth)){  // over C tile columns
+            
+            int tiles = 0;
+
+            for (int tile_id=tile_curR_id; tile_id<tile_nxtR_id; tile_id+=tiles){
+
+                uint32_t mask_tiles = __ballot_sync(FULL_MASK, tile_id+lane_id<tile_nxtR_id);
+                tiles = __popc(mask_tiles); // maximum # tiles can be loaded in cur row 
+                
+                int start_of_tile = 0, nnz_of_tile = 0, bitmap_of_tile = 0, col_of_tile = 0;
+                if (tile_curR_id+lane_id<tile_nxtR_id){
+                    // load as many as as tile info of cur tile-row
+                    start_of_tile = md.tileNnz_dev[tile_id+lane_id];
+                    nnz_of_tile = md.nnzTile_dev[tile_id+lane_id];
+                    bitmap_of_tile = md.bitMap_dev[tile_id+lane_id];
+                    col_of_tile = md.tileColIdx_dev[tile_id+lane_id];
+                }
+
+                // use all loaded tiles
+                for(int tile_cnt = 0; tile_cnt<tiles; ++tile_cnt){
+                    int start_cur_tile = __shfl_sync(FULL_MASK, start_of_tile, tile_cnt);
+                    int nnz_cur_tile = __shfl_sync(FULL_MASK, nnz_of_tile, tile_cnt);
+                    int bitmap_cur_tile = __shfl_sync(FULL_MASK, bitmap_of_tile, tile_cnt);
+                    int col_cur_tile = __shfl_sync(FULL_MASK, col_of_tile, tile_cnt);
+                    
+					// load requiring B rows to smem
+					for (int j=0; j<tn; ++j){
+						if ((bitmap_cur_tile & (1<<j)) && col_idx+lane_id<md.k){
+                            curB[warp_id][j*32+lane_id] = md.mat_b_dev[(col_cur_tile+j)*md.k + col_idx + lane_id];
+						}
+					}
+
+					// visit all nz of the sparse tile
+                    if (nnz_cur_tile==1){
+                        // load sparse nnz from glb mem
+                        float val = md.vals_dev[start_cur_tile];
+                        int rcidx = md.rcOffset_dev[start_cur_tile];
+                        res[rcidx>>16] += val * curB[warp_id][(rcidx & 0x0000ffff)*32 + lane_id];
+                         
+                    }else if (nnz_cur_tile==2){    
+                        // load sparse nnz from glb mem
+                        float val1 = md.vals_dev[start_cur_tile];
+                        float val2 = md.vals_dev[start_cur_tile+1];
+                        int rcidx1 = md.rcOffset_dev[start_cur_tile];
+                        int rcidx2 = md.rcOffset_dev[start_cur_tile+1];
+                        res[rcidx1>>16] += val1 * curB[warp_id][(rcidx1 & 0x0000ffff)*32 + lane_id];
+                        res[rcidx2>>16] += val2 * curB[warp_id][(rcidx2 & 0x0000ffff)*32 + lane_id];
+                    }else if (nnz_cur_tile==3){
+                        // load sparse nnz from glb mem
+                        float val1 = md.vals_dev[start_cur_tile];
+                        float val2 = md.vals_dev[start_cur_tile+1];
+                        float val3 = md.vals_dev[start_cur_tile+2];
+                        int rcidx1 = md.rcOffset_dev[start_cur_tile];
+                        int rcidx2 = md.rcOffset_dev[start_cur_tile+1];
+                        int rcidx3 = md.rcOffset_dev[start_cur_tile+2];
+                        res[rcidx1>>16] += val1 * curB[warp_id][(rcidx1 & 0x0000ffff)*32 + lane_id];
+                        res[rcidx2>>16] += val2 * curB[warp_id][(rcidx2 & 0x0000ffff)*32 + lane_id]; 
+                        res[rcidx3>>16] += val3 * curB[warp_id][(rcidx3 & 0x0000ffff)*32 + lane_id]; 
+                    }else if(nnz_cur_tile==4){
+                        // load sparse nnz from glb mem
+                        float val1 = md.vals_dev[start_cur_tile];
+                        float val2 = md.vals_dev[start_cur_tile+1];
+                        float val3 = md.vals_dev[start_cur_tile+2];
+                        float val4 = md.vals_dev[start_cur_tile+3];
+                        int rcidx1 = md.rcOffset_dev[start_cur_tile];
+                        int rcidx2 = md.rcOffset_dev[start_cur_tile+1];
+                        int rcidx3 = md.rcOffset_dev[start_cur_tile+2];
+                        int rcidx4 = md.rcOffset_dev[start_cur_tile+3];
+                        res[rcidx1>>16] += val1 * curB[warp_id][(rcidx1 & 0x0000ffff)*32 + lane_id];
+                        res[rcidx2>>16] += val2 * curB[warp_id][(rcidx2 & 0x0000ffff)*32 + lane_id]; 
+                        res[rcidx3>>16] += val3 * curB[warp_id][(rcidx3 & 0x0000ffff)*32 + lane_id]; 
+                        res[rcidx4>>16] += val4 * curB[warp_id][(rcidx4 & 0x0000ffff)*32 + lane_id]; 
+                    }else{ 
+                        int steps = 1;
+                        int cur_end = start_cur_tile+nnz_cur_tile;
+                        for (int kk=start_cur_tile; kk<cur_end; kk+=steps){
+                            uint32_t mask_join = __ballot_sync(FULL_MASK, kk+lane_id<cur_end);
+                            steps = __popc(mask_join);
+
+                            float val = 0;
+                            int rcidx = 0;
+                            if (kk+lane_id<cur_end){
+                                // load sparse nnz from glb mem
+                                val = md.vals_dev[kk+lane_id];
+                                rcidx = md.rcOffset_dev[kk+lane_id];
+                            }
+                            // exchange nnz within a warp && perfom FMA
+                            for (int it=0; it<steps; ++it){
+                                float v = __shfl_sync(FULL_MASK, val, it);
+                                int rc = __shfl_sync(FULL_MASK, rcidx, it);
+
+                                res[rc>>16] += v * curB[warp_id][(rc & 0x0000ffff)*32 + lane_id];
+                            }
+                        }// end visiting all nz in a sparse tile
+                    }
+                }// end visiting all loaded sparse tiles
+            }// end visiting all sparse tiles in cur tile-row
+            
+			// store C tiles back to global mem
+            //#pragma unroll
+            for (int c=0; c<tm; ++c){
+                if (row_idx*tm+c<md.m){
+                    md.mat_c_dev[(row_idx*tm+c)*md.k+col_idx+lane_id] = res[c];
+                }
+                res[c] = 0;
+            }
+    
+		} // end C column loops
+	} // end C row loops
+}
 GPU_Info
 print_gpu_and_kernel_info()
 {
@@ -255,89 +405,92 @@ void run(DataLoader& input){
 #define NBX 1
 #define NBY 1
 #define NT 1
+    
+#define flex_kernel flexspmm_cuda_wo_pre_v5
+
 #ifdef CUBE4X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 0, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 0, NBX, NBY, NT);
 #endif
 #ifdef RECT8X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 1, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 1, NBX, NBY, NT);
 #endif
 #ifdef RECT16X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 2, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 2, NBX, NBY, NT);
 #endif
 #ifdef RECT32X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 3, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 3, NBX, NBY, NT);
 #endif
 #ifdef RECT64X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 4, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 4, NBX, NBY, NT);
 #endif
 #ifdef RECT128X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 5, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 5, NBX, NBY, NT);
 #endif
 #ifdef RECT256X4
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 6, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 6, NBX, NBY, NT);
 #endif
 #ifdef RECT4X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 7, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 7, NBX, NBY, NT);
 #endif
 #ifdef CUBE8X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 8, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 8, NBX, NBY, NT);
 #endif
 #ifdef RECT16X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 9, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 9, NBX, NBY, NT);
 #endif
 #ifdef RECT32X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 10, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 10, NBX, NBY, NT);
 #endif
 #ifdef RECT64X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 11, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 11, NBX, NBY, NT);
 #endif
 #ifdef RECT128X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 12, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 12, NBX, NBY, NT);
 #endif
 #ifdef RECT256X8
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 13, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 13, NBX, NBY, NT);
 #endif
 #ifdef RECT4X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 14, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 14, NBX, NBY, NT);
 #endif
 #ifdef RECT8X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 15, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 15, NBX, NBY, NT);
 #endif
 #ifdef CUBE16X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 16, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 16, NBX, NBY, NT);
 #endif
 #ifdef RECT32X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 17, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 17, NBX, NBY, NT);
 #endif
 #ifdef RECT64X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 18, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 18, NBX, NBY, NT);
 #endif
 #ifdef RECT128X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 19, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 19, NBX, NBY, NT);
 #endif
 #ifdef RECT256X16
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 20, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 20, NBX, NBY, NT);
 #endif
 #ifdef RECT4X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 21, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 21, NBX, NBY, NT);
 #endif
 #ifdef RECT8X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 22, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 22, NBX, NBY, NT);
 #endif
 #ifdef RECT16X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 23, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 23, NBX, NBY, NT);
 #endif
 #ifdef CUBE32X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 24, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 24, NBX, NBY, NT);
 #endif
 #ifdef RECT64X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 25, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 25, NBX, NBY, NT);
 #endif
 #ifdef RECT128X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 26, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 26, NBX, NBY, NT);
 #endif
 #ifdef RECT256X32
-        SPECIFY_KERNEL(flexspmm_cuda_wo_pre_v4, 27, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 27, NBX, NBY, NT);
 #endif
 
     cudaEvent_t spgemm_start, spgemm_stop;
