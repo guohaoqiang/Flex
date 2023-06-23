@@ -1,7 +1,13 @@
 #include "DataLoader.cuh"
+#include "flex.cuh"
+
+#include <ranges>
+
 DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     std::string data_name = data_path.substr(data_path.find_last_of("/")+1);
     graph_name = data_name.substr(0, data_name.find(".")); 
+
+    vertex_order_abbr = "OVO"; // Original Vertex Order.
     //cpuA = std::make_unique<CSR>();
     std::fstream fin;
     fin.open(data_path,std::ios::in);
@@ -67,6 +73,13 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         c = 100;
     }
     //gpuA = std::make_unique<dCSR>();
+
+    cuda_alloc_cpy();
+}
+
+void
+DataLoader::cuda_alloc_cpy()
+{
 #ifdef AXW
     //LOG(INFO) << "Initialize X & W ...";
     //printf("%d of %s, Initialize X & W ...",__LINE__,__FILE__);
@@ -82,6 +95,7 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     CUDA_CHECK(cudaMalloc(&gpuRef2, sizeof(float) * c * n));
     CUDA_CHECK(cudaMemset(gpuRef2, 0, sizeof(float)*n*c));
 #endif
+
     CUDA_CHECK(cudaMalloc(&rowPtr_dev, sizeof(unsigned int) * (m+1)));
     CUDA_CHECK(cudaMemcpy(rowPtr_dev, rowPtr.data(), sizeof(unsigned int)*(n+1), cudaMemcpyHostToDevice));
     
@@ -91,15 +105,148 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     CUDA_CHECK(cudaMalloc(&vals_dev, sizeof(float) * nnz)); 
     CUDA_CHECK(cudaMemcpy(vals_dev, vals.data(), sizeof(float)*nnz, cudaMemcpyHostToDevice));
     
-    CUDA_CHECK(cudaMalloc(&gpuC, sizeof(float) * dim * m));
-    CUDA_CHECK(cudaMemset(gpuC, 0, sizeof(float)*m*dim));
+
+    C_elts = m * dim;
+    gpuC_bytes = C_elts * sizeof( cpuC[0] );
+    CUDA_CHECK(cudaMalloc(&gpuC, gpuC_bytes));
+    CUDA_CHECK(cudaMemset(gpuC, 0, gpuC_bytes));
     
     for (int i=0; i<n*dim; ++i){
         //cpuX[i] = (float)rand()/RAND_MAX;
         cpuX.push_back(1.0);
     }
-    CUDA_CHECK(cudaMalloc(&gpuX, sizeof(float) * n * dim));
-    CUDA_CHECK(cudaMemcpy(gpuX, cpuX.data(), sizeof(float)*n*dim, cudaMemcpyHostToDevice));
+
+    gpuX_bytes = cpuX.size() * sizeof( cpuX[0] );
+
+    CUDA_CHECK(cudaMalloc(&gpuX, gpuX_bytes ) );
+    CUDA_CHECK(cudaMemcpy(gpuX, cpuX.data(), gpuX_bytes, cudaMemcpyHostToDevice));
+}
+
+void
+DataLoader::c_cuSpmm_run(Perfs& perfRes)
+{
+  cuSpmm(*this, perfRes);
+  h_ref_c.resize( C_elts );
+  CUDA_CHECK
+    ( cudaMemcpy( h_ref_c.data(), gpuC, gpuC_bytes, cudaMemcpyDeviceToHost ));
+}
+
+void
+DataLoader::gpuC_zero()
+{
+  CUDA_CHECK( cudaMemset( gpuC, 0, gpuC_bytes ) );
+}
+
+
+DataLoader::DataLoader(const DataLoader& dl)
+{
+  #define CPY(m) m = dl.m
+  CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name);
+  #undef CPY
+}
+
+DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
+{
+  // Renumber the vertices based on a depth-first search of the graph in
+  // dl, starting at vertex 0.
+
+  vertex_order_abbr = "DFS";
+
+  assert( dl.rowPtr.size() == n + 1 );
+
+  auto dst_iter_make = [&](uint s)
+  { return ranges::subrange(&dl.col[dl.rowPtr[s]],&dl.col[dl.rowPtr[s+1]]); };
+
+  vector<uint> vo_to_dfs(n);  // original Vertex Order to DFS order
+  vo_to_dfs[0] = n; // Will be changed back to zero.
+
+  col.resize( dl.col.size() );
+  vals.resize( dl.col.size() );
+
+  //
+  // Perform Depth-First Search (DFS)
+  //
+  auto root = dst_iter_make(0);
+  vector< decltype(root) > stack { root };
+
+  rowPtr.reserve( n+1 );
+  rowPtr.push_back( 0 );
+  rowPtr.push_back( root.size() );
+
+  while ( !stack.empty() )
+    {
+      auto& dst_iter = stack.back();
+
+      while ( dst_iter && vo_to_dfs[ dst_iter.front() ] ) dst_iter.advance(1);
+      if ( !dst_iter ) { stack.pop_back();  continue; }
+
+      const uint dst_vo  = dst_iter.front();  dst_iter.advance(1);
+      const uint dst_dfs = rowPtr.size() - 1;
+      vo_to_dfs[ dst_vo ] = dst_dfs;
+      auto dst_node_iterator = dst_iter_make( dst_vo );
+      stack.push_back( dst_node_iterator );
+      // Update edge list pointer. (Row Number to vals/col array index.)
+      rowPtr.push_back( rowPtr.back() + dst_node_iterator.size() );
+    }
+  vo_to_dfs[0] = 0;
+
+  //
+  // Copy destinations (col) and edge weights (vals) from dl to this object.
+  //
+  for ( auto src_vo: views::iota(size_t(0),n) )
+    {
+      const auto src_dfs = vo_to_dfs[src_vo];
+      const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
+      assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
+
+      // Sort destinations.  Tiling algorithm needs dests sorted.
+      vector< pair<float,uint> > perm;  perm.reserve(d);
+      const auto e_idx_vo = dl.rowPtr[ src_vo ];
+      for ( auto e: views::iota( e_idx_vo, e_idx_vo + d ) )
+        perm.emplace_back( dl.vals[ e ], vo_to_dfs[ dl.col[ e ] ] );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+
+      uint e_idx_dfs_i = rowPtr[src_dfs];
+      for ( auto& [val, dst_new]: perm )
+        {
+          col[ e_idx_dfs_i ] = dst_new;
+          vals[ e_idx_dfs_i++ ] = val;
+        }
+    }
+
+  //
+  // Perform a rough test of whether the two graphs match.
+  //
+
+  vector<int64_t> check_vo(n);
+  vector<int64_t> check_dfs(n);
+  vector<double> checkw_vo(n);
+  vector<double> checkw_dfs(n);
+
+  for ( uint src_vo: views::iota(size_t(0),n) )
+    {
+      const auto src_dfs = vo_to_dfs[src_vo];
+      const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
+      assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
+      const int inc = src_vo & 0xf;
+      for ( auto n_idx: views::iota(0,d) )
+        {
+          const uint e_idx_vo = dl.rowPtr[src_vo] + n_idx;
+          const uint e_idx_dfs = rowPtr[src_dfs] + n_idx;
+          check_vo[ dl.col[ e_idx_vo ] ] += inc;
+          check_dfs[ col[ e_idx_dfs ] ] += inc;
+          checkw_vo[ dl.col[ e_idx_vo ] ] += dl.vals[ e_idx_vo ];
+          checkw_dfs[ col[ e_idx_dfs ] ] += vals[ e_idx_dfs ];
+        }
+    }
+
+  for ( uint src_vo: views::iota(size_t(0),n) )
+    {
+      assert( check_vo[src_vo] == check_dfs[ vo_to_dfs[src_vo] ] );
+      assert( checkw_vo[src_vo] == checkw_dfs[ vo_to_dfs[src_vo] ] );
+    }
+
+  cuda_alloc_cpy();
 }
 
 bool DataLoader::compare(){
