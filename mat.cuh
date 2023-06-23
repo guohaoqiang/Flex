@@ -28,6 +28,7 @@ extern __constant__ Mat_POD mat_dev;
 class Mat : public Mat_POD{
     public:
 	int pos;
+    DataLoader& dl;
 	std::vector<unsigned int>& rowPtr;
     std::vector<unsigned int>& colIdx;
 	std::vector<float>& vals;
@@ -66,22 +67,19 @@ class Mat : public Mat_POD{
   int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
 
 	void csr2flex(int i);
-    void transfer(float*);
+    void transfer();
     void dataVolume_est();
     void launch_prep();
 
     
     void freeMatGPU(){
-        CHECK_CUDA(cudaFree(tileNnz_dev));
-        CHECK_CUDA(cudaFree(tileColIdx_dev));
-        CHECK_CUDA(cudaFree(vals_dev)); 
-        CHECK_CUDA(cudaFree(tileRowPtr_dev));
-        CHECK_CUDA(cudaFree(nnzTile_dev));
-        CHECK_CUDA(cudaFree(bitMap_dev));
-        CHECK_CUDA(cudaFree(rcOffset_dev));
-        
-        CHECK_CUDA(cudaFree(mat_b_dev));
-        CHECK_CUDA(cudaFree(mat_c_dev));
+      cuda_freez(tileNnz_dev);
+      cuda_freez(tileColIdx_dev);
+      cuda_freez(vals_dev); 
+      cuda_freez(tileRowPtr_dev);
+      cuda_freez(nnzTile_dev);
+      cuda_freez(bitMap_dev);
+      cuda_freez(rcOffset_dev);
     }
     
 };

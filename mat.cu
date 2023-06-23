@@ -12,7 +12,7 @@ bool set_max(T& accum, const T2& v)
 __constant__ Mat_POD mat_dev;
 
 Mat::Mat(DataLoader& input, int tileh,int tilew)
-         :rowPtr(input.rowPtr),colIdx(input.col),vals(input.vals){
+         :dl(input),rowPtr(input.rowPtr),colIdx(input.col),vals(input.vals){
             m = input.n;
             n = m;
             k = input.dim;
@@ -25,11 +25,13 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
 			pos = 0; 
 }
 void Mat::launch_prep(){
-    cudaMemset(mat_c_dev, 0.0, m*k*sizeof(float));
+    dl.gpuC_zero();
+    mat_b_dev = dl.gpuX;
+    mat_c_dev = dl.gpuC;
     Mat_POD for_dev(*this);
     cudaMemcpyToSymbol(mat_dev, &for_dev, sizeof(for_dev), 0, cudaMemcpyHostToDevice);
 }
-void Mat::transfer(float* host_mat_b){
+void Mat::transfer(){
 #   define CMALC(var)                                   \
      var##_bytes = var.size() * sizeof( var[0] );        \
      CHECK_CUDA(cudaMalloc( &var##_dev, var##_bytes )) ;
@@ -37,8 +39,6 @@ void Mat::transfer(float* host_mat_b){
      CMALC( tileNnz ); CMALC( tileColIdx ); CMALC( vals );
      CMALC( tileRowPtr ); CMALC( nnzTile ); CMALC( bitMap ); CMALC( rcOffset );
 
-     mat_b_bytes = n*k*sizeof(float);
-     mat_c_bytes = m*k*sizeof(float);
 #   undef CMALC
 
     // transfer data to device
@@ -49,23 +49,18 @@ void Mat::transfer(float* host_mat_b){
     cudaMemcpy(nnzTile_dev, nnzTile.data(), nnzTile.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(bitMap_dev, bitMap.data(), bitMap.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(rcOffset_dev, rcOffset.data(), rcOffset.size()*sizeof(int), cudaMemcpyHostToDevice);
-    
-    CHECK_CUDA(cudaMalloc(&mat_b_dev, n*k*sizeof(float)));
-    cudaMemcpy(mat_b_dev, host_mat_b, n*k*sizeof(float), cudaMemcpyHostToDevice);
-    
-    CHECK_CUDA(cudaMalloc(&mat_c_dev, m*k*sizeof(float)));
 }
 void Mat::dataVolume_est(){
     est_fp = int64_t(nnz)*k;
     est_ld_bytes = int64_t(tileNnz_bytes) + 
                     tileColIdx_bytes + 
                     vals_bytes + 
-                    mat_b_bytes +
+                    dl.gpuX_bytes +
                     tileRowPtr_bytes + 
                     nnzTile_bytes + 
                     bitMap_bytes + 
                     rcOffset_bytes;
-    est_st_bytes = int64_t(mat_c_bytes);
+    est_st_bytes = dl.gpuC_bytes;
 }
 
 void Mat::csr2tile(){
@@ -83,6 +78,8 @@ void Mat::csr2flex(int ridx){
 	// row tile upper bound and lower bound
 	int rowStart = ridx * tm;
 	int rowEnd = min(m, (ridx+1)*tm); // exclusive
+
+        const int n_tiles_limit = ( n + tn - 1 ) / tn;
 
 	// keep track of the cols in each row
 	std::vector<int> cIdx(tm, -1); 
@@ -105,6 +102,7 @@ void Mat::csr2flex(int ridx){
     while (pos<rowPtr[rowEnd]){
 		int nnzInTile = 0;
         tiles_in_cur_row++;
+        assert( tiles_in_cur_row <= n_tiles_limit );
 		// collect tiles in the tile-row
         int bit_map = 0;
 		for (int i=rowStart; i<rowEnd; ++i){
@@ -113,7 +111,7 @@ void Mat::csr2flex(int ridx){
 			//  #nze in the i-th row
 			
 			// c check is necessary because it constraines nze within the i-th row
-			while (c<rowPtr[i+1] && colIdx[c]>=left && colIdx[c]<right){
+                        while ( c<rowPtr[i+1] && colIdx[c]<right ){
                 //char rc = 0;
                 int rc16 = 0;
 
@@ -124,6 +122,7 @@ void Mat::csr2flex(int ridx){
 
 				// real col idx
 				int temp_tileColIdx = cIdx[i-rowStart];
+                                assert( temp_tileColIdx >= left );
                 //rc |= (temp_tileColIdx-left);
                 rc16 |= (temp_tileColIdx-left);
 			    bit_map |= 1<<(temp_tileColIdx-left);	

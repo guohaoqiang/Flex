@@ -1,4 +1,5 @@
 #include "flex.cuh"
+#include <ranges>
 /*
 __device__ __forceinline__
 uint32_t glm_u32addr(const void *glm_ptr) {
@@ -309,9 +310,11 @@ constexpr tileConf tileConfs[] =
 void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const int tm, const int tn){
     // verify results
     int count = 0;
+    int nz = 0;
     //std::cout<<"Verify result accuracy ("<< to_string(tm) << "X" << to_string(tn) << ") ... " <<std::endl; 
     for (int i=0; i<m; ++i){
         for (int j=0; j<n; ++j){
+          if ( h_gold[i*n+j] == 0 ) nz++;
             if (abs(h_gold[i*n+j]-h_res[i*n+j])>=0.01){
                 count++;
                 //if (j==0) 
@@ -322,9 +325,17 @@ void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const i
     perfRes.flex_spmm_errors.push_back(count);
     if (count>0)
         std::cout<<"Kernel ("<< to_string(tm) << "X" << to_string(tn) << ") errs: " << count<<std::endl;
+
+    // If correct result has too many zeros it will be hard to catch errors.
+    assert( nz < n/2 );
+
     memset(h_res, 0, n*m*sizeof(float));
 }
-void run(DataLoader& input){
+void run(DataLoader& input_vo){
+
+    // Prepare a DFS-ordered matrix.
+    DataLoaderDFS input_dfs(input_vo);
+
     //input.print_data();
     NPerf_init();
     GPU_Info info = print_gpu_and_kernel_info();
@@ -358,11 +369,8 @@ void run(DataLoader& input){
     Perfs perfRes;
     
     // ------------ run baseline cuSpmm ----------------
-    cuSpmm(input, perfRes);
-    float* h_ref_c = (float*)malloc(input.m*input.dim*sizeof(float)); 
-    CUDA_CHECK(cudaMemcpy(h_ref_c, input.gpuC, sizeof(float)*input.m*input.dim, cudaMemcpyDeviceToHost));
-    input.freemem(); // just manually free memory space 
-
+    input_vo.c_cuSpmm_run(perfRes);
+    input_dfs.c_cuSpmm_run(perfRes);
     // ---------------------------------------------------
 /*    
     cudaEventRecord(cuspmm_stop);
@@ -378,28 +386,28 @@ void run(DataLoader& input){
 
     // --------- run Flex titling spmm ---------------
 
-    float* h_res_c = (float*)malloc(input.m*input.dim*sizeof(float)); 
+    float* const h_res_c = (float*) malloc( input_vo.gpuC_bytes );
     struct App_Kernel_Info {
          App_Kernel_Info  
-         (Kernel_Info& k,const char *name, int i, int nbx, int nby, int nt):
-           k_ptr(k.func_ptr),name_base(name),
-           shape_idx{i},
-           n_threads{nt},n_blocks_x{nbx},n_blocks_y{nby}{}
+         (Kernel_Info& k,const char *name, int i):
+           k_ptr(k.func_ptr),name_base(name),shape_idx{i}{}
         GPU_Info_Func k_ptr;
         const char *name_base;
         const int shape_idx;
-        const int n_blocks_x, n_blocks_y, n_threads;
     };  
     vector<App_Kernel_Info> kernels;
     vector<Mat> spMats;
     
+    #define EXAMINE_KERNEL1(k,sidx,graph) \
+    {  spMats.emplace_back(graph, tileConfs[sidx].tm, tileConfs[sidx].tn); \
+       kernels.emplace_back(info.GET_INFO((k)),#k,sidx); }
+
     #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
-    {const int idx = kernels.size(); \
-        kernels.emplace_back(info.GET_INFO((k)),#k,sidx,nbx,nby,nt); }
+      EXAMINE_KERNEL1(k,sidx,input_vo); \
+      EXAMINE_KERNEL1(k,sidx,input_dfs);
 
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\
     {const int idx = kernels.size(); \
-        spMats.emplace_back(Mat(input, tileConfs[sidx].tm, tileConfs[sidx].tn)); \
         EXAMINE_KERNEL((k<tileConfs[sidx].tm,tileConfs[sidx].tn,4>), sidx, nbx, nby, nt); }
 // NBX,NBY,NT are useless currently
 #define NBX 1
@@ -497,17 +505,26 @@ void run(DataLoader& input){
     cudaEventCreate(&spgemm_start);
     cudaEventCreate(&spgemm_stop);
 
+    // Sort kernels so that results are grouped by vertex ordering.
+    //
+    vector<int> torder;
+    for ( int i: views::iota(0,int(kernels.size())) ) torder.push_back(i);
+    ranges::stable_sort
+      ( torder, ranges::less(),
+        [&](int i){ return spMats[i].dl.vertex_order_abbr; } );
+
     pTable table(stdout);
-    for( int id=0; id<kernels.size(); ++id ){
+    for ( int id: torder ){
         
       Mat& mat = spMats[id];
+      DataLoader& input = mat.dl;
         spMats[id].csr2tile();
-        mat.stats_collect( mat.tn == 4 && mat.tm == 4 );
-        if ( mat.tn == 4 && mat.tm == 4 ){
+        mat.stats_collect(false);
+        if ( table.num_lines == 0 ){
            printf("cuSpmm setup/µs: %.2f , prosessing/µs: %.2f, total/µs: %.2f\n",
                    perfRes.cuSpmmSetup,perfRes.cuSpmmProcessing,perfRes.cuSpmm_time); 
         }
-        spMats[id].transfer(input.cpuX.data());
+        mat.transfer();
         spMats[id].dataVolume_est();
         spMats[id].launch_prep();
         
@@ -537,6 +554,7 @@ void run(DataLoader& input){
         elap_t += spgemm_duration; 
         cudaDeviceSynchronize(); 
 
+          table.entry("Ord", "%3s", input.vertex_order_abbr);
           table.entry
             ("Tile", "%-6s",
              to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
@@ -697,8 +715,12 @@ void run(DataLoader& input){
           }
         
         // transfer data to host
-        cudaMemcpy(h_res_c, spMats[id].mat_c_dev, spMats[id].m*spMats[id].k*sizeof(float), cudaMemcpyDeviceToHost);
-        resCheck(h_ref_c, h_res_c, spMats[id].m, spMats[id].k, perfRes, spMats[id].tm, spMats[id].tn);
+        cudaMemcpy
+          ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
+            cudaMemcpyDeviceToHost);
+        resCheck
+          ( input.h_ref_c.data(), h_res_c, spMats[id].m, spMats[id].k,
+            perfRes, spMats[id].tm, spMats[id].tn);
         
         float t = elap_t*(1e-3);
         perfRes.flex_spmm_time.push_back(t);
@@ -706,7 +728,6 @@ void run(DataLoader& input){
     }
 
     free(h_res_c);
-    free(h_ref_c);
 
 #ifdef OUTPUTCSV
     std::ofstream myfile(input.graph_name+"_time.csv");

@@ -10,7 +10,7 @@ SRC_FILES = mat.cu main.cu flex.cu DataLoader.cu
 OBJ_FILES = $(addsuffix .o,$(basename $(SRC_FILES)))
 
 CXX = g++
-NVXX = nvcc
+NVXX = $(CUDA_ROOT_DIR)/bin/nvcc
 
 # Recognized both by nvcc and g++
 #
