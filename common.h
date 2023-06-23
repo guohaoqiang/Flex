@@ -88,4 +88,14 @@ public:
         /*return EXIT_FAILURE;  */                                               \
     }                                                                          \
 }
+
+template< typename T >
+inline void
+cuda_freez(T*& ptr_dev)
+{
+  if ( !ptr_dev ) return;
+  CUDA_CHECK( cudaFree( ptr_dev ) );
+  ptr_dev = nullptr;
+}
+
 #endif /* COMMON_H */
