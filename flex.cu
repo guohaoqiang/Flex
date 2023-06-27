@@ -21,6 +21,64 @@ void ldg64(int &reg0, int &reg1, const uint32_t &addr) {
     );
 }
 */
+
+
+// Return Streaming Multiprocessor (aka SM, MP) ID.
+__device__ uint32_t
+smid_get()
+{
+  uint smid = 0;
+  asm( "mov.u32 %0, %%smid;" : "=r" (smid) );
+  return smid;
+}
+
+typedef uint32_t pClock_t;
+
+constexpr size_t timing_item_size = 16;
+
+struct __align__(timing_item_size) Timing_Item {
+  pClock_t time_start;
+  uint32_t smid_start;
+  pClock_t time_end;
+  uint32_t smid_end; // To detect preemption.
+};
+static_assert( timing_item_size == sizeof(Timing_Item) );
+
+struct Timing {
+  Timing_Item *timing_items;
+};
+
+__constant__ Timing timing_dev;
+
+__device__ void
+timing_start()
+{
+  constexpr int wp_sz = 32;
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if ( threadIdx.x % wp_sz == 0 )
+    {
+      Timing_Item& ti = timing_dev.timing_items[tid/wp_sz];
+      ti.time_start = clock();
+      ti.smid_start = smid_get();
+    }
+  __syncwarp();
+}
+__device__ void
+timing_end()
+{
+  constexpr int wp_sz = 32;
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  __syncwarp();
+  if ( threadIdx.x % wp_sz == 0 )
+    {
+      Timing_Item& ti = timing_dev.timing_items[tid/wp_sz];
+      ti.time_end = clock();
+      ti.smid_end = smid_get();
+    }
+}
+
+
+
 // args:
 //		tileRowPtr: tile ptr for the 1st tile in each row
 //		tileNnz: ptr for the 1st non zero entry of each tile
@@ -156,6 +214,8 @@ void flexspmm_cuda_wo_pre_v5(){
     const uint32_t warp_id = threadIdx.x / WARPSZ;
 	//const uint32_t warps = (blockDim.x + WARPSZ - 1)/WARPSZ;
 
+    timing_start();
+
 	// now we restrain "tn" in {4,8,16,32}
 	__shared__ float curB[warps][tn*32]; // 2 warps && each warp needs tn*8*4 matB float entries
 	float res[tm];
@@ -281,6 +341,9 @@ void flexspmm_cuda_wo_pre_v5(){
     
 		} // end C column loops
 	} // end C row loops
+
+        timing_end();
+
 }
 // args:
 //		tileRowPtr: tile ptr for the 1st tile in each row
@@ -305,6 +368,8 @@ void flexspmm_cuda_wo_pre_v6(){
 	const uint32_t lane_id = threadIdx.x % WARPSZ;
     const uint32_t warp_id = threadIdx.x / WARPSZ;
 	//const uint32_t warps = (blockDim.x + WARPSZ - 1)/WARPSZ;
+
+    timing_start();
 
 	// now we restrain "tn" in {4,8,16,32}
 	__shared__ float curB[warps][tn*32]; // 2 warps && each warp needs tn*8*4 matB float entries
@@ -412,6 +477,8 @@ void flexspmm_cuda_wo_pre_v6(){
     
 		} // end C column loops
 	} // end C row loops
+
+        timing_end();
 }
 GPU_Info
 print_gpu_and_kernel_info()
@@ -636,6 +703,20 @@ void run(DataLoader& input_vo){
     cudaEventCreate(&spgemm_start);
     cudaEventCreate(&spgemm_stop);
 
+    constexpr int wp_sz = 32;
+    constexpr int threads = 128;  // Block Size
+
+    int n_blocks_max = 0;
+    for ( auto& m: spMats ) set_max(n_blocks_max,(m.m+m.tm-1)/m.tm);
+    const int n_warps_max = threads / wp_sz * n_blocks_max;
+    vector<Timing_Item> timing_items( n_warps_max );
+    Timing timing_dh;
+    const size_t timing_items_bytes =
+      timing_items.size() * sizeof( timing_items[0] );
+    CUDA_CHECK( cudaMalloc( &timing_dh.timing_items, timing_items_bytes ) );
+    CUDA_CHECK( cudaMemcpyToSymbol( timing_dev, &timing_dh, sizeof(timing_dh),
+                                    0, cudaMemcpyHostToDevice ) );
+
     // Sort kernels so that results are grouped by vertex ordering.
     //
     vector<int> torder;
@@ -659,31 +740,96 @@ void run(DataLoader& input_vo){
         spMats[id].dataVolume_est();
         spMats[id].launch_prep();
         
-        constexpr int wp_sz = 32;
         pTable_Row row(table);
         // Compute the expected number of multiply/add instructions.
         //
         const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
         const double n_madd_p_wp = double(n_madd) / wp_sz;
                 
-        int threads = 128;
 
         Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
         typedef void (*KPtr)();
         
         int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
+        const int grid_n_wps = threads / wp_sz * gridx;
+
+        CE( cudaMemset( timing_dh.timing_items, 0, timing_items_bytes ) );
+        CE( cudaDeviceSynchronize() );
+        NPerf_metrics_off();
+
         float spgemm_duration;
-        float elap_t = 0; 
-        cudaEventRecord(spgemm_start,0);
+        CE( cudaEventRecord(spgemm_start,0) );
+
+        /// Launch Kernel -- Without Performance Counter Sampling
+        //
+        KPtr(ki->func_ptr)<<<gridx,threads,0,0>>>();
+        //
+        // Until NPerf_metrics_off is fixed event timing won't work.
+
+        CE( cudaEventRecord(spgemm_stop,0) );
+        CE( cudaEventSynchronize(spgemm_stop) );
+        CE( cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop) );
+        const float elap_t = spgemm_duration;
+
+        // Copy per-warp timing data back to host.
+        //
+        CE( cudaMemcpy( timing_items.data(), timing_dh.timing_items,
+                        timing_items_bytes, cudaMemcpyDeviceToHost ) );
+
+        NPerf_metrics_on();
+
+        /// Launch Kenrels -- With Performance Counter Sampling
+        //
         for ( NPerf_data_reset(); NPerf_need_run_get(); ){
             KPtr(ki->func_ptr)<<<gridx,threads>>>();
         }
-        cudaEventRecord(spgemm_stop,0);
-        cudaEventSynchronize(spgemm_start);
-        cudaEventSynchronize(spgemm_stop);
-        cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop);
-        elap_t += spgemm_duration; 
-        cudaDeviceSynchronize(); 
+
+        // Compute per-sm minimum-start and maximum-finish (end) times.
+        //
+        map<int32_t,Timing_Item> sm_start_end;
+        int n_migs = 0; // Number of migrations.
+        for ( auto& ti: views::take(timing_items,grid_n_wps) )
+          if ( ti.smid_start != ti.smid_end )
+            {
+              n_migs++;
+            }
+          else
+            {
+              auto& tis = sm_start_end[ti.smid_start];
+              if ( tis.time_start == tis.time_end ) tis = ti;
+              set_min( tis.time_start, ti.time_start );
+              set_max( tis.time_end, ti.time_end );
+            }
+
+        if ( n_migs ) printf("-- Number of migrations: %d\n",n_migs);
+        //
+        // Note: The per-sm data collection won't work if a block
+        // migrates from one sm to another.
+
+        // Compute average sm execution time and maximum sm execution time.
+        //
+        int64_t et_sum = 0;
+        vector<int64_t> et;
+        for ( auto& [smid,tis]: sm_start_end )
+          {
+            const int64_t elapsed = tis.time_end - tis.time_start;
+            et_sum += elapsed;
+            et.push_back( elapsed );
+          }
+
+        ranges::sort( et, ranges::greater() );
+
+        const double clock_period_us = 1e6 / info.clock_freq_hz;
+        const double et_clock_max_us = et[0] * clock_period_us;
+        const double et_clock_avg_us = et_sum * clock_period_us / num_sm;
+        const double imbalance_penalty =
+          et_clock_avg_us ? et_clock_max_us / et_clock_avg_us - 1 : 0.0;
+        //
+        // A value of 0 is ideal. A value of 1 means that execution
+        // time is twice as long as a perfectly balanced workload, a
+        // value of 1.2 means that execution time was 1+1.2 = 2.2
+        // times longer than it would be if the workload were
+        // perfectly balanced.
 
           table.entry("Ord", "%3s", input.vertex_order_abbr);
           table.entry
@@ -719,7 +865,14 @@ void run(DataLoader& input_vo){
           // Get and print elapsed time.
           //
           const double et_seconds = NPerf_kernel_et_get();
-          table.entry( "t/µs", "%8.2f", et_seconds * 1e6 );
+          table.entry( "t/µs", "%7.1f", et_seconds * 1e6 );
+          const bool more_timing = false;
+          if ( more_timing )
+            {
+              table.entry( "M t/µs", "%8.2f", et_clock_max_us );
+              table.entry( "A t/µs", "%8.2f", et_clock_avg_us );
+            }
+          table.entry( "Imb", "%3.0f", 100 * imbalance_penalty );
 
           // Write a heading that will span multiple columns.
           //

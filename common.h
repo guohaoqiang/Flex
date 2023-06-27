@@ -98,4 +98,20 @@ cuda_freez(T*& ptr_dev)
   ptr_dev = nullptr;
 }
 
+template<typename T, typename T2>
+inline bool set_max(T& accum, const T2& v)
+{
+  if ( v <= accum ) return false;
+  accum = v;
+  return true;
+}
+
+template<typename T, typename T2>
+inline bool set_min(T& accum, const T2& v)
+{
+  if ( v >= accum ) return false;
+  accum = v;
+  return true;
+}
+
 #endif /* COMMON_H */
