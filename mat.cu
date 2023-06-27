@@ -1,14 +1,6 @@
 #include "mat.cuh"
 #include <bit>
 
-template<typename T, typename T2>
-bool set_max(T& accum, const T2& v)
-{
-  if ( v <= accum ) return false;
-  accum = v;
-  return true;
-}
-
 __constant__ Mat_POD mat_dev;
 
 Mat::Mat(DataLoader& input, int tileh,int tilew)
