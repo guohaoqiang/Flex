@@ -177,6 +177,7 @@ Mat::stats_collect(bool print)
     }
   tile_p_row_histo.resize(max_n_tiles+1);
   const uint n_tiles = nnzTile.size();
+
   tile_nnz_histo.resize(tmn+1);
   n_col_sum = 0;
   uint max_t_nnz = 0;
@@ -190,7 +191,35 @@ Mat::stats_collect(bool print)
     }
   tile_nnz_histo.resize(max_t_nnz+1);
 
+  vector<int> tiles_bucket(6,0);
+  int total = 0;
+  int remain = 0;
+  for (int i=0; i<tile_p_row_histo.size(); ++i){
+    int counts = tile_p_row_histo[i]; 
+    if (counts>=1 && counts<8){
+        tiles_bucket[0] += counts;
+    }else if (counts>=8 && counts<16){
+        tiles_bucket[1] += counts;
+    }else if (counts>=16 && counts<32){
+        tiles_bucket[2] += counts;
+    }else if (counts>=32 && counts<64){
+        tiles_bucket[3] += counts;
+    }else if (counts>=64 && counts<128){
+        tiles_bucket[4] += counts;
+    }else if (counts>=128){
+        tiles_bucket[5] += counts;
+    }else{
+        remain += counts;
+    }
+    total += counts;
+  }
   if ( !print ) return;
+  printf("[1,8): %f%%   ", tiles_bucket[0]*100.0/tile_m); 
+  printf("[8,16): %f%%    ", tiles_bucket[1]*100.0/tile_m); 
+  printf("[16,32): %f%%   ", tiles_bucket[2]*100.0/tile_m); 
+  printf("[32,64): %f%%   ", tiles_bucket[3]*100.0/tile_m); 
+  printf("[64,128): %f%%  ", tiles_bucket[4]*100.0/tile_m); 
+  printf("[128, +OO): %f%%\n", tiles_bucket[5]*100.0/tile_m); 
 
   printf("Arrays m=%d, n=%d, k=%d. Tile %d × %d.   nnz=%d  Avg deg=%.1f\n",
          m, n, k, tm, tn, nnz, double(nnz)/m);

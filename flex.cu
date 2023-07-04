@@ -533,6 +533,9 @@ void run(DataLoader& input_vo){
 
     // Prepare a DFS-ordered matrix.
     DataLoaderDFS input_dfs(input_vo);
+    DataLoaderDeg input_deg(input_vo);
+    DataLoaderRcm input_rcm(input_vo);
+    DataLoaderGorder input_gorder(input_vo);
 
     //input.print_data();
     NPerf_init();
@@ -569,6 +572,9 @@ void run(DataLoader& input_vo){
     // ------------ run baseline cuSpmm ----------------
     input_vo.c_cuSpmm_run(perfRes);
     input_dfs.c_cuSpmm_run(perfRes);
+    input_deg.c_cuSpmm_run(perfRes);
+    input_rcm.c_cuSpmm_run(perfRes);
+    input_gorder.c_cuSpmm_run(perfRes);
     // ---------------------------------------------------
 /*    
     cudaEventRecord(cuspmm_stop);
@@ -602,7 +608,10 @@ void run(DataLoader& input_vo){
 
     #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
       EXAMINE_KERNEL1(k,sidx,input_vo); \
-      EXAMINE_KERNEL1(k,sidx,input_dfs);
+      EXAMINE_KERNEL1(k,sidx,input_dfs); \
+      EXAMINE_KERNEL1(k,sidx,input_deg); \
+      EXAMINE_KERNEL1(k,sidx,input_rcm); \
+      EXAMINE_KERNEL1(k,sidx,input_gorder);
 
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\
     {const int idx = kernels.size(); \

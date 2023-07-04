@@ -16,5 +16,5 @@ SpMM: Sparse-dense matrix multiplication
 |      Dense     |  19717 X 128  |            |
 
 
-## Outputs
-![alt text](20230614.png "Outputs")
+<//>:# (## Outputs)
+<//>:# (![alt text](20230614.png "Outputs"))

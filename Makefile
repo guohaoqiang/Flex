@@ -6,7 +6,7 @@ NP_ROOT = $(GP_ROOT)/lib
 
 DEFAULT: flex
 
-SRC_FILES = mat.cu main.cu flex.cu DataLoader.cu
+SRC_FILES = mat.cu main.cu flex.cu DataLoader.cu unitheap.cu tools.cu edgelist.cu adjlist.cu algo_bfs.cu order_deg.cu order_rcm.cu order_gorder.cu 
 OBJ_FILES = $(addsuffix .o,$(basename $(SRC_FILES)))
 
 CXX = g++

@@ -1,4 +1,5 @@
 #include "DataLoader.cuh"
+#include "edgelist.cuh"
 #include "flex.cuh"
 
 #include <ranges>
@@ -112,8 +113,8 @@ DataLoader::cuda_alloc_cpy()
     CUDA_CHECK(cudaMemset(gpuC, 0, gpuC_bytes));
     
     for (int i=0; i<n*dim; ++i){
-        //cpuX[i] = (float)rand()/RAND_MAX;
-        cpuX.push_back(1.0);
+        cpuX.push_back((float)rand()/RAND_MAX);
+        //cpuX.push_back(1.0);
     }
 
     gpuX_bytes = cpuX.size() * sizeof( cpuX[0] );
@@ -245,6 +246,191 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
       assert( check_vo[src_vo] == check_dfs[ vo_to_dfs[src_vo] ] );
       assert( checkw_vo[src_vo] == checkw_dfs[ vo_to_dfs[src_vo] ] );
     }
+
+  cuda_alloc_cpy();
+}
+
+DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
+{
+  vertex_order_abbr = "DEG";
+
+  assert( dl.rowPtr.size() == n + 1 );
+
+  vector<ul> vo_to_deg;  // original Vertex Order to DEG order
+  
+  col.resize( dl.col.size() );
+  vals.resize( dl.col.size() );
+
+  //
+  // Convert CSR to edge lists
+  //
+  Edgelist h(dl);
+  vo_to_deg.reserve(m);
+  vo_to_deg = order_deg(h,true);
+  //
+  // According to renumbered vertex order, generate rowPtr 
+  //  
+  vector<ul> vo_mp(m);
+  for (ul i=0; i<vo_to_deg.size(); ++i){
+      ul v = vo_to_deg[i];
+      vo_mp[v] = i;
+  }
+  rowPtr.push_back( 0 );
+  for (auto v:vo_mp){
+    rowPtr.push_back(rowPtr.back()+dl.rowPtr[v+1]-dl.rowPtr[v]);
+  }
+  //
+  // Copy destinations (col) and edge weights (vals) from dl to this object.
+  //
+  for ( auto src_vo: views::iota(size_t(0),n) )
+    {
+      const auto src_deg = vo_to_deg[src_vo];
+      const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
+      //printf("src_vo = %d, src_deg = %d, d = %d\n",src_vo, src_deg, d);
+      assert( rowPtr[src_deg] + d == rowPtr[src_deg+1] );
+
+      // Sort destinations.  Tiling algorithm needs dests sorted.
+      vector< pair<float,uint> > perm;  perm.reserve(d);
+      const auto e_idx_vo = dl.rowPtr[ src_vo ];
+      for ( auto e: views::iota( e_idx_vo, e_idx_vo + d ) )
+        perm.emplace_back( dl.vals[ e ], vo_to_deg[ dl.col[ e ] ] );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+
+      uint e_idx_deg_i = rowPtr[src_deg];
+      for ( auto& [val, dst_new]: perm )
+        {
+          col[ e_idx_deg_i ] = dst_new;
+          vals[ e_idx_deg_i++ ] = val;
+        }
+    }
+
+  //
+  // Perform a rough test of whether the two graphs match.
+  //
+
+  cuda_alloc_cpy();
+}
+
+DataLoaderRcm::DataLoaderRcm(const DataLoader& dl):DataLoader(dl)
+{
+  vertex_order_abbr = "RCM";
+
+  assert( dl.rowPtr.size() == n + 1 );
+
+  vector<ul> vo_to_rcm;  // original Vertex Order to RCM order
+
+  col.resize( dl.col.size() );
+  vals.resize( dl.col.size() );
+
+  //
+  // Convert CSR to edge lists
+  //
+
+  Edgelist h(dl);
+  vo_to_rcm.reserve(m);
+  vo_to_rcm = order_rcm(h);
+
+  //
+  // According to renumbered vertex order, generate rowPtr 
+  //  
+  vector<ul> vo_mp(m);
+  for (ul i=0; i<vo_to_rcm.size(); ++i){
+      ul v = vo_to_rcm[i];
+      vo_mp[v] = i;
+  }
+  rowPtr.push_back( 0 );
+  for (auto v:vo_mp){
+    rowPtr.push_back(rowPtr.back()+dl.rowPtr[v+1]-dl.rowPtr[v]);
+  }
+  //
+  // Copy destinations (col) and edge weights (vals) from dl to this object.
+  //
+  for ( auto src_vo: views::iota(size_t(0),n) )
+    {
+      const auto src_rcm = vo_to_rcm[src_vo];
+      const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
+      assert( rowPtr[src_rcm] + d == rowPtr[src_rcm+1] );
+
+      // Sort destinations.  Tiling algorithm needs dests sorted.
+      vector< pair<float,uint> > perm;  perm.reserve(d);
+      const auto e_idx_vo = dl.rowPtr[ src_vo ];
+      for ( auto e: views::iota( e_idx_vo, e_idx_vo + d ) )
+        perm.emplace_back( dl.vals[ e ], vo_to_rcm[ dl.col[ e ] ] );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+
+      uint e_idx_rcm_i = rowPtr[src_rcm];
+      for ( auto& [val, dst_new]: perm )
+        {
+          col[ e_idx_rcm_i ] = dst_new;
+          vals[ e_idx_rcm_i++ ] = val;
+        }
+    }
+
+  //
+  // Perform a rough test of whether the two graphs match.
+  //
+
+  cuda_alloc_cpy();
+}
+
+DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
+{
+  vertex_order_abbr = "GOR";
+
+  assert( dl.rowPtr.size() == n + 1 );
+
+  vector<ul> vo_to_gorder;  // original Vertex Order to Gorder order
+
+  col.resize( dl.col.size() );
+  vals.resize( dl.col.size() );
+
+  //
+  // Convert CSR to edge lists
+  //
+  ul window_sz= 5;
+  Edgelist h(dl);
+  vo_to_gorder.reserve(m);
+  vo_to_gorder = complete_gorder(h, window_sz);
+
+  //
+  // According to renumbered vertex order, generate rowPtr 
+  //  
+  vector<ul> vo_mp(m);
+  for (ul i=0; i<vo_to_gorder.size(); ++i){
+      ul v = vo_to_gorder[i];
+      vo_mp[v] = i;
+  }
+  rowPtr.push_back( 0 );
+  for (auto v:vo_mp){
+    rowPtr.push_back(rowPtr.back()+dl.rowPtr[v+1]-dl.rowPtr[v]);
+  }
+  //
+  // Copy destinations (col) and edge weights (vals) from dl to this object.
+  //
+  for ( auto src_vo: views::iota(size_t(0),n) )
+    {
+      const auto src_gorder = vo_to_gorder[src_vo];
+      const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
+      assert( rowPtr[src_gorder] + d == rowPtr[src_gorder+1] );
+
+      // Sort destinations.  Tiling algorithm needs dests sorted.
+      vector< pair<float,uint> > perm;  perm.reserve(d);
+      const auto e_idx_vo = dl.rowPtr[ src_vo ];
+      for ( auto e: views::iota( e_idx_vo, e_idx_vo + d ) )
+        perm.emplace_back( dl.vals[ e ], vo_to_gorder[ dl.col[ e ] ] );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+
+      uint e_idx_gorder_i = rowPtr[src_gorder];
+      for ( auto& [val, dst_new]: perm )
+        {
+          col[ e_idx_gorder_i ] = dst_new;
+          vals[ e_idx_gorder_i++ ] = val;
+        }
+    }
+
+  //
+  // Perform a rough test of whether the two graphs match.
+  //
 
   cuda_alloc_cpy();
 }
