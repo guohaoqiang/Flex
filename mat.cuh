@@ -6,6 +6,7 @@
 #include "common.h"
 #include "DataLoader.cuh"
 #define DEBUG
+
 using namespace std;
 class Mat_POD{
     public:
@@ -66,7 +67,8 @@ class Mat : public Mat_POD{
   std::vector<uint> tile_nnz_histo;    // Histogram of number of nz per tile.
   int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
 
-	void csr2flex(int i);
+	void csr2flex_Rmajor(int i);
+	void csr2flex_Cmajor(int i);
     void transfer();
     void dataVolume_est();
     void launch_prep();
@@ -78,7 +80,9 @@ class Mat : public Mat_POD{
       cuda_freez(vals_dev); 
       cuda_freez(tileRowPtr_dev);
       cuda_freez(nnzTile_dev);
+#ifndef COL_MAJ_TILE
       cuda_freez(bitMap_dev);
+#endif
       cuda_freez(rcOffset_dev);
     }
     

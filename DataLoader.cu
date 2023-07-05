@@ -387,7 +387,7 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
   //
   // Convert CSR to edge lists
   //
-  ul window_sz= 5;
+  ul window_sz= 3;
   Edgelist h(dl);
   vo_to_gorder.reserve(m);
   vo_to_gorder = complete_gorder(h, window_sz);

@@ -14,7 +14,8 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
 			tileRowPtr.push_back(0);
 			tileNnz.push_back(0);
 			newVals.resize(input.nnz);
-			pos = 0; 
+			pos = 0;
+            bitMap_bytes = 0; 
 }
 void Mat::launch_prep(){
     dl.gpuC_zero();
@@ -29,8 +30,10 @@ void Mat::transfer(){
      CHECK_CUDA(cudaMalloc( &var##_dev, var##_bytes )) ;
 
      CMALC( tileNnz ); CMALC( tileColIdx ); CMALC( vals );
-     CMALC( tileRowPtr ); CMALC( nnzTile ); CMALC( bitMap ); CMALC( rcOffset );
-
+     CMALC( tileRowPtr ); CMALC( nnzTile ); CMALC( rcOffset );
+#ifndef COL_MAJ_TILE
+CMALC( bitMap );
+#endif
 #   undef CMALC
 
     // transfer data to device
@@ -39,7 +42,9 @@ void Mat::transfer(){
     cudaMemcpy(vals_dev, newVals.data(), newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(tileRowPtr_dev, tileRowPtr.data(), tileRowPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(nnzTile_dev, nnzTile.data(), nnzTile.size()*sizeof(int), cudaMemcpyHostToDevice);
+#ifndef COL_MAJ_TILE
     cudaMemcpy(bitMap_dev, bitMap.data(), bitMap.size()*sizeof(int), cudaMemcpyHostToDevice);
+#endif
     cudaMemcpy(rcOffset_dev, rcOffset.data(), rcOffset.size()*sizeof(int), cudaMemcpyHostToDevice);
 }
 void Mat::dataVolume_est(){
@@ -60,13 +65,14 @@ void Mat::csr2tile(){
 	int tileRows = (m+tm-1)/tm;
 		
 	for (int i=0; i<tileRows; ++i){
-		csr2flex(i);
+		//csr2flex_Rmajor(i);
+		csr2flex_Cmajor(i);
 		//csr2regular(i);
 	} 
 }
 
 // convert a row of tiles to FlexSpTiles
-void Mat::csr2flex(int ridx){
+void Mat::csr2flex_Rmajor(int ridx){
 	// row tile upper bound and lower bound
 	int rowStart = ridx * tm;
 	int rowEnd = min(m, (ridx+1)*tm); // exclusive
@@ -158,6 +164,88 @@ void Mat::csr2flex(int ridx){
 	tileRowPtr.push_back(tileRowPtr.back()+tiles_in_cur_row);
 }
 
+// convert a row of tiles to FlexSpTiles
+void Mat::csr2flex_Cmajor(int ridx){
+	// row tile upper bound and lower bound
+	int rowStart = ridx * tm;
+	int rowEnd = min(m, (ridx+1)*tm); // exclusive
+
+    const int n_tiles_limit = ( n + tn - 1 ) / tn;
+
+	// keep track of the cols in each row
+	std::vector<int> cIdx(tm, -1); 
+	std::vector<int> cOffset(tm, 0);
+	// get the left bound
+	// iterate over rows to get the smallest col idx
+	unsigned int left = n;
+	for (int i=rowStart; i<rowEnd; ++i){
+		// here, we assume there is no empty row
+		left = min((int)left, (int)colIdx[rowPtr[i]]);
+		cIdx[i-rowStart] = colIdx[rowPtr[i]];
+	}
+
+	// right bound (exclusive)
+	unsigned int right = min((int)left + tn, n);
+	int nnzInRows = 0;
+    int tiles_in_cur_row = 0;
+
+    //int tileStart = rowPtr[ridx];
+    while (pos<rowPtr[rowEnd]){
+		int nnzInTile = 0;
+        tiles_in_cur_row++;
+        assert( tiles_in_cur_row <= n_tiles_limit );
+		// collect tiles in the tile-row
+        int bit_map = 0;
+        for (int i_tn=0; i_tn<tn; ++i_tn){
+            
+		    for (int i=rowStart; i<rowEnd; ++i){
+                // absolute position of the nze in csr, idx = base + offset
+                int c = rowPtr[i] + cOffset[i-rowStart];
+                if ( colIdx[c]==left+i_tn && c<rowPtr[i+1] && colIdx[c]<right ){
+                    int rc16 = 0;
+
+                    // currently, it is not 4-bit
+                    int temp_rowOffset = i-rowStart;
+                    //rc |= (temp_rowOffset<<4);
+                    rc16 |= (temp_rowOffset<<16);
+
+                    // real col idx
+                    int temp_tileColIdx = cIdx[i-rowStart];
+                    assert( temp_tileColIdx >= left );
+                    //rc |= (temp_tileColIdx-left);
+                    rc16 |= (temp_tileColIdx-left);
+			        bit_map |= 1<<(temp_tileColIdx-left);	
+                    
+                    // nze values
+                    newVals[pos] = vals[c];
+                    rcOffset.push_back(rc16);
+
+                    cIdx[i-rowStart] = colIdx[++c];
+                    pos++;
+                    cOffset[i-rowStart]++;
+                    nnzInTile++;
+                    nnzInRows++; 
+                }
+            }
+        }
+        nnzTile.push_back(nnzInTile); 	
+        bitMap.push_back(bit_map); 
+		
+        tileNnz.push_back(tileNnz.back()+nnzInTile);
+        tileColIdx.push_back(left);
+        // update left and right bound for next tile
+		left = n;
+		for (int i=rowStart; i<rowEnd; ++i){
+			// check whether the column goes to the next row
+			int rnnz = rowPtr[i+1]-rowPtr[i];
+			if (cOffset[i-rowStart]<rnnz){
+				left = min((int)left, (int)cIdx[i-rowStart]);
+			}
+		}
+		right = min((int)left + tn, n);
+	}
+	tileRowPtr.push_back(tileRowPtr.back()+tiles_in_cur_row);
+}
 
 void
 Mat::stats_collect(bool print)
@@ -263,18 +351,20 @@ void Mat::print2(){
     */
 #endif
     std::cout<<std::endl<<"nnzTile:"<<std::endl;
-    //for (int i=0; i<nnzTile.size(); ++i){
-    for (int i=0; i<20; ++i){
+    for (int i=0; i<nnzTile.size(); ++i){
+    //for (int i=0; i<20; ++i){
         std::cout<<nnzTile[i]<<" ";
     }
+#ifndef COL_MAJ_TILE
     std::cout<<std::endl<<"bitMap:"<<std::endl;
     //for (int i=0; i<bitMap.size(); ++i){
     for (int i=0; i<20; ++i){
         std::cout<<bitMap[i]<<" ";
     }
+#endif
     std::cout<<std::endl<<"rc:"<<std::endl;
-	//for (int i=0; i<rcOffset.size(); ++i){
-	for (int i=0; i<20; ++i){
+	for (int i=0; i<rcOffset.size(); ++i){
+	//for (int i=0; i<20; ++i){
 		int r = rcOffset[i]>>16;
 		int c = rcOffset[i] & 0x0000FFFF;
         std::cout<<"{"<<r<<","<<c<<"}"<<" ";

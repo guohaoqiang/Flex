@@ -14,6 +14,8 @@
 #include "order_rcm.cuh"
 #include "order_gorder.cuh"
 
+#define COL_MAJ_TILE
+
 class DataLoader{
 public:
     DataLoader(const std::string& st, const int di);
