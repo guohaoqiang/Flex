@@ -18,3 +18,6 @@ SpMM: Sparse-dense matrix multiplication
 
 <//>:# (## Outputs)
 <//>:# (![alt text](20230614.png "Outputs"))
+
+## Vertex Ordering
+The code for DEG,RCM and Gorder was taken from [here](https://github.com/lecfab/rescience-gorder)
