@@ -42,7 +42,6 @@
 #define RECT128X32
 #define RECT256X32
 
-
 /*
 void run_test(float* h_res_c, 
                 DataLoader& input, 

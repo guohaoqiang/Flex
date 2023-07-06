@@ -10,6 +10,12 @@
 #include <assert.h>
 #include <iomanip>
 #include "common.h"
+#include "order_deg.cuh"
+#include "order_rcm.cuh"
+#include "order_gorder.cuh"
+
+#define COL_MAJ_TILE
+
 class DataLoader{
 public:
     DataLoader(const std::string& st, const int di);
@@ -78,5 +84,21 @@ public:
   DataLoaderDFS(const DataLoader& dl);
 };
 
+class DataLoaderDeg : public DataLoader
+{
+public:
+  DataLoaderDeg(const DataLoader& dl);
+};
 
+class DataLoaderRcm : public DataLoader
+{
+public:
+  DataLoaderRcm(const DataLoader& dl);
+};
+
+class DataLoaderGorder : public DataLoader
+{
+public:
+  DataLoaderGorder(const DataLoader& dl);
+};
 #endif /* DATALOADER_H */
