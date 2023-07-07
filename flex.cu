@@ -420,7 +420,6 @@ void flexspmm_cuda_wo_pre_v6(){
 						    }
 					    }
                     }
-                    __syncwarp();
                     auto do_n = [&](int n)
                      {
                        for ( int z=0; z<n; z++ )

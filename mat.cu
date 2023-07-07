@@ -65,8 +65,8 @@ void Mat::csr2tile(){
 	int tileRows = (m+tm-1)/tm;
 		
 	for (int i=0; i<tileRows; ++i){
-		csr2flex_Rmajor(i);
-		//csr2flex_Cmajor(i);
+		//csr2flex_Rmajor(i);
+		csr2flex_Cmajor(i);
 		//csr2regular(i);
 	} 
 }
