@@ -608,6 +608,12 @@ void flexspmm_cuda_wo_pre_v7(){
         timing_end();
 }
 
+struct RC16 {
+  __host__ __device__
+  RC16( uint32_t rcpacked ):r( rcpacked & 0xffff ),c( rcpacked >> 16 ){};
+  const uint32_t r, c;
+};
+
 // args:
 //		tileRowPtr: tile ptr for the 1st tile in each row
 //		tileNnz: ptr for the 1st non zero entry of each tile
@@ -668,46 +674,60 @@ void flexspmm_cuda_wo_pre_v8(){
                 for(int tile_cnt = 0; tile_cnt<tiles; ++tile_cnt){
                     int start_cur_tile = __shfl_sync(FULL_MASK, start_of_tile, tile_cnt);
                     int nnz_cur_tile = __shfl_sync(FULL_MASK, nnz_of_tile, tile_cnt);
-                    //int bitmap_cur_tile = __shfl_sync(FULL_MASK, bitmap_of_tile, tile_cnt);
                     int col_cur_tile = __shfl_sync(FULL_MASK, col_of_tile, tile_cnt);
+                    // visit all nz of the sparse tile
+
+                    const int n_rounds = nnz_cur_tile / WARPSZ;
+                    for ( int rnd = 0;  rnd < n_rounds;  rnd++ )
+                      {
+                        // load sparse nnz from glb mem
+                        const int vidx = start_cur_tile + rnd*WARPSZ + lane_id;
+                        const float val = md.vals_dev[vidx];
+                        const int rcidx = md.rcOffset_dev[vidx];
+
+                        // exchange nnz within a warp && perfom FMA
+                        for (int it=0; it<WARPSZ; ++it){
+                          float v = __shfl_sync(FULL_MASK, val, it);
+                          RC16 rc( __shfl_sync(FULL_MASK, rcidx, it) );
+                          res[rc.c] +=
+                            v * md.mat_b_dev[(col_cur_tile+rc.r)*md.k + col_idx + lane_id];
+                        }
+                      }
+
+                    const uint nnz_remaining = nnz_cur_tile % WARPSZ;
+                    const int vidx_base = start_cur_tile + n_rounds * WARPSZ;
+
                     auto do_n = [&](int n)
                      {
                        for ( int z=0; z<n; z++ )
                          {
-                           float val = md.vals_dev[start_cur_tile+z];
-                           int rcidx = md.rcOffset_dev[start_cur_tile+z];
-                           int x_row = col_cur_tile + (rcidx & 0xffff);
-                           res[rcidx>>16] += val
-                             * md.mat_b_dev[x_row*md.k + col_idx + lane_id];
+                           float val = md.vals_dev[ vidx_base + z ];
+                           RC16 rc( md.rcOffset_dev[ vidx_base + z ] );
+                           int x_row = col_cur_tile + rc.r;
+                           res[ rc.c ] +=
+                             val * md.mat_b_dev[x_row*md.k + col_idx + lane_id];
                          }
                      };
-					// visit all nz of the sparse tile
-                    if (nnz_cur_tile<=32){
-                        do_n(nnz_cur_tile);
-                    }else{ 
-                        int steps = 1;
-                        int cur_end = start_cur_tile+nnz_cur_tile;
-                        for (int kk=start_cur_tile; kk<cur_end; kk+=steps){
-                            uint32_t mask_join = __ballot_sync(FULL_MASK, kk+lane_id<cur_end);
-                            steps = __popc(mask_join);
 
-                            float val = 0;
-                            int rcidx = 0;
-                            if (kk+lane_id<cur_end){
-                                // load sparse nnz from glb mem
-                                val = md.vals_dev[kk+lane_id];
-                                rcidx = md.rcOffset_dev[kk+lane_id];
-                            }
-                            // exchange nnz within a warp && perfom FMA
-                            for (int it=0; it<steps; ++it){
-                                float v = __shfl_sync(FULL_MASK, val, it);
-                                int rc = __shfl_sync(FULL_MASK, rcidx, it);
-
-                                //res[rc>>16] += v * curB[warp_id][(rc & 0x0000ffff)*32 + lane_id];
-                                res[rc>>16] += v * md.mat_b_dev[(col_cur_tile+(rc & 0xffff))*md.k + col_idx + lane_id];
-                            }
-                        }// end visiting all nz in a sparse tile
+                    if ( nnz_remaining ){
+                      #define C5(n) C4(n) C4(n+16)
+                      #define C4(n) C3(n) C3(n+8)
+                      #define C3(n) C2(n) C2(n+4)
+                      #define C2(n) C1(n) C1(n+2)
+                      #define C1(n) C0(n) C0(n+1)
+                      #define C0(n) case n: do_n(n); break;
+                      switch ( nnz_remaining ) {
+                        C2(1);  // This generates do_n(1) to do_n(4)
+                      default: do_n( nnz_remaining ); break;
+                      }
+                      #undef C5
+                      #undef C4
+                      #undef C3
+                      #undef C2
+                      #undef C1
+                      #undef C0
                     }
+
                 }// end visiting all loaded sparse tiles
             }// end visiting all sparse tiles in cur tile-row
             
@@ -782,6 +802,9 @@ void run(DataLoader& input_vo){
     DataLoaderRcm input_rcm(input_vo);
     DataLoaderGorder input_gorder(input_vo);
 
+    constexpr bool show_insn_shared = false;
+    constexpr bool show_insn_local = false;
+
     //input.print_data();
     NPerf_init();
     GPU_Info info = print_gpu_and_kernel_info();
@@ -799,12 +822,18 @@ void run(DataLoader& input_vo){
     NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
     NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
-    NPerf_metric_collect("sm__sass_inst_executed_op_local_ld.sum");
-    NPerf_metric_collect("sm__sass_inst_executed_op_shared_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_st.sum");
-    NPerf_metric_collect("sm__sass_inst_executed_op_local_st.sum");
-    NPerf_metric_collect("sm__sass_inst_executed_op_shared_st.sum");
+    if ( show_insn_shared )
+      {
+        NPerf_metric_collect("sm__sass_inst_executed_op_shared_ld.sum");
+        NPerf_metric_collect("sm__sass_inst_executed_op_shared_st.sum");
+      }
+    if ( show_insn_local )
+      {
+        NPerf_metric_collect("sm__sass_inst_executed_op_local_ld.sum");
+        NPerf_metric_collect("sm__sass_inst_executed_op_local_st.sum");
+      }
     NPerf_metric_collect("sm__sass_inst_executed_op_global_st.sum");
     NPerf_metric_collect
         ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed");
@@ -978,8 +1007,23 @@ void run(DataLoader& input_vo){
     vector<int> torder;
     for ( int i: views::iota(0,int(kernels.size())) ) torder.push_back(i);
     ranges::stable_sort
-      ( torder, ranges::less(),
-        [&](int i){ return spMats[i].dl.vertex_order_abbr; } );
+      ( torder,
+        [&](int ai, int bi){
+          Mat& a = spMats[ai];
+          Mat& b = spMats[bi];
+          return a.tn == b.tn
+            ? a.dl.vertex_order_abbr < b.dl.vertex_order_abbr
+            : a.tn < b.tn;
+        });
+
+    map<string,int> kernels_seen;
+    for ( auto& i: torder )
+      if ( App_Kernel_Info& aki = kernels[i]; !kernels_seen[aki.name_base]++ )
+        {
+          Kernel_Info& ki = info.get_info(aki.k_ptr);
+          printf("Kernel %s:  %d regs,  %zd local\n",
+                 aki.name_base,ki.cfa.numRegs, ki.cfa.localSizeBytes);
+        }
 
     pTable table(stdout);
     for ( int id: torder ){
@@ -1035,7 +1079,7 @@ void run(DataLoader& input_vo){
 
         NPerf_metrics_on();
 
-        /// Launch Kenrels -- With Performance Counter Sampling
+        /// Launch Kernels -- With Performance Counter Sampling
         //
         for ( NPerf_data_reset(); NPerf_need_run_get(); ){
             KPtr(ki->func_ptr)<<<gridx,threads>>>();
@@ -1096,9 +1140,10 @@ void run(DataLoader& input_vo){
           const int64_t n_tiles = mat.nnzTile.size();
 
           table.entry( "Event/µs", "%8.2f", elap_t * 1e3 );
-          
+
+          table.header_span( "T1", 1);
           table.entry
-            ("T1%", "%5.2f", double(mat.tile_nnz_histo[1])*100.0/n_tiles);
+            ("%", "%2.0f", double(mat.tile_nnz_histo[1])*100.0/n_tiles);
 
           const double nz_p_t = double(mat.nnz) / n_tiles;
 
@@ -1161,14 +1206,17 @@ void run(DataLoader& input_vo){
 
           table.entry( "GC", "%4.1f", n_ld_p_nz);
 
-          table.entry
-            ( "L", "%4.1f",
-              NPerf_metric_value_get("sm__sass_inst_executed_op_local_ld.sum")
-              / n_madd_p_wp );
-          table.entry
-            ( "S", "%4.1f",
-              NPerf_metric_value_get("sm__sass_inst_executed_op_shared_ld.sum")
-              / n_madd_p_wp );
+          if ( show_insn_local )
+            table.entry
+              ( "L", "%4.1f",
+                NPerf_metric_value_get("sm__sass_inst_executed_op_local_ld.sum")
+                / n_madd_p_wp );
+          if ( show_insn_shared )
+            table.entry
+              ( "S", "%4.1f",
+                NPerf_metric_value_get
+                ("sm__sass_inst_executed_op_shared_ld.sum")
+                / n_madd_p_wp );
           table.header_span_end();
 
           table.header_span_start("Store");
@@ -1180,14 +1228,17 @@ void run(DataLoader& input_vo){
             ( "G", "%4.2f",
               NPerf_metric_value_get("sm__sass_inst_executed_op_global_st.sum")
               / n_madd_p_wp );
-          table.entry
-            ( "L", "%3.1f",
-              NPerf_metric_value_get("sm__sass_inst_executed_op_local_st.sum")
-              / n_madd_p_wp );
-          table.entry
-            ( "S", "%3.1f",
-              NPerf_metric_value_get("sm__sass_inst_executed_op_shared_st.sum")
-              / n_madd_p_wp );
+          if ( show_insn_local )
+            table.entry
+              ( "L", "%3.1f",
+                NPerf_metric_value_get("sm__sass_inst_executed_op_local_st.sum")
+                / n_madd_p_wp );
+          if ( show_insn_shared )
+            table.entry
+              ( "S", "%3.1f",
+                NPerf_metric_value_get
+                ("sm__sass_inst_executed_op_shared_st.sum")
+                / n_madd_p_wp );
           table.header_span_end();
 
           table.entry
