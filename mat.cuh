@@ -3,6 +3,7 @@
 #include <vector>
 #include <iostream>
 #include <algorithm>
+#include <stdio.h>
 #include "common.h"
 #include "DataLoader.cuh"
 #define DEBUG
@@ -37,7 +38,7 @@ class Mat : public Mat_POD{
     Mat(DataLoader& mat, int tileh, int tilew);
 	void print1();
 	void print2();
-    void stats_collect(bool print);
+    void stats_collect(FILE *stream = nullptr);
     
 	void csr2tile();
 
@@ -65,6 +66,7 @@ class Mat : public Mat_POD{
   // Statistics
   std::vector<uint> tile_p_row_histo;  // Histogram of number of tiles per row.
   std::vector<uint> tile_nnz_histo;    // Histogram of number of nz per tile.
+  std::vector<uint> panel_lg_nnz_histo;
   int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
 
 	void csr2flex_Rmajor(int i);

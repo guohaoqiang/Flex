@@ -1,5 +1,6 @@
 #include "mat.cuh"
 #include <bit>
+#include <ranges>
 
 __constant__ Mat_POD mat_dev;
 
@@ -248,20 +249,41 @@ void Mat::csr2flex_Cmajor(int ridx){
 }
 
 void
-Mat::stats_collect(bool print)
+Mat::stats_collect(FILE *stream)
 {
   const uint tmn = tm * tn;
 
   const uint tile_m = ( m + tm - 1 ) / tm;
+  const uint tile_m_floor = m / tm;
   const uint tile_n = ( n + tn - 1 ) / tn;
   tile_p_row_histo.resize(tile_n+1);
   uint max_n_tiles = 0;
+
+  const uint panel_nnz_lim = tm * n;
+  assert( panel_nnz_lim == tm * uint64_t(n) ); // Overflow check.
+  const uint panel_lg_nnz_lim = bit_width(panel_nnz_lim);
+  uint panel_lg_nnz_max = 0, panel_lg_nnz_min = panel_lg_nnz_lim;
+  panel_lg_nnz_histo.resize(panel_lg_nnz_lim+1);
+
   for ( uint tile_r = 0;  tile_r < tile_m;  tile_r++ )
     {
       const uint n_tiles = tileRowPtr[tile_r+1] - tileRowPtr[tile_r];
       assert( n_tiles <= tile_n );
       set_max( max_n_tiles, n_tiles );
       tile_p_row_histo[n_tiles]++;
+      if ( tile_r >= tile_m_floor ) continue;
+      const auto tile_start = tileRowPtr[tile_r];
+      const auto tile_stop = tileRowPtr[tile_r+1];
+      const auto tidx_start = tileNnz[tile_start];
+      const auto tidx_stop = tileNnz[tile_stop];
+      assert( tidx_stop > tidx_start );
+      const uint nnz_panel = tidx_stop - tidx_start;
+      const uint lg_nnz = bit_width(nnz_panel);
+      assert( lg_nnz < panel_lg_nnz_histo.size() );
+      assert( lg_nnz );
+      set_max( panel_lg_nnz_max, lg_nnz );
+      set_min( panel_lg_nnz_min, lg_nnz );
+      panel_lg_nnz_histo[lg_nnz]++;
     }
   tile_p_row_histo.resize(max_n_tiles+1);
   const uint n_tiles = nnzTile.size();
@@ -301,29 +323,45 @@ Mat::stats_collect(bool print)
     }
     total += counts;
   }
-  if ( !print ) return;
-  printf("[1,8): %f%%   ", tiles_bucket[0]*100.0/tile_m); 
-  printf("[8,16): %f%%    ", tiles_bucket[1]*100.0/tile_m); 
-  printf("[16,32): %f%%   ", tiles_bucket[2]*100.0/tile_m); 
-  printf("[32,64): %f%%   ", tiles_bucket[3]*100.0/tile_m); 
-  printf("[64,128): %f%%  ", tiles_bucket[4]*100.0/tile_m); 
-  printf("[128, +OO): %f%%\n", tiles_bucket[5]*100.0/tile_m); 
+  if ( !stream ) return;
 
-  printf("Arrays m=%d, n=%d, k=%d. Tile %d × %d.   nnz=%d  Avg deg=%.1f\n",
+  fprintf(stream, "Ordering %s.  Tile %d × %d\n",
+          dl.vertex_order_abbr.c_str(), tm, tn);
+
+  fprintf(stream, "Histogram of lg non-zeros per panel (tile row).\n");
+
+  pTable lg_nnz_tab(stream);
+  for ( auto i: views::iota(panel_lg_nnz_min,panel_lg_nnz_max+1) )
+    {
+      pTable_Row _(lg_nnz_tab);
+      lg_nnz_tab.entry("Lg", "%2d", i);
+      lg_nnz_tab.entry("Panels", "%7d", panel_lg_nnz_histo[i] );
+      lg_nnz_tab.entry
+        ("Pct", "%6.2f", panel_lg_nnz_histo[i] * 100.0 / tile_m_floor );
+    }
+
+  fprintf(stream,"[1,8): %f%%   ", tiles_bucket[0]*100.0/tile_m); 
+  fprintf(stream,"[8,16): %f%%    ", tiles_bucket[1]*100.0/tile_m); 
+  fprintf(stream,"[16,32): %f%%   ", tiles_bucket[2]*100.0/tile_m); 
+  fprintf(stream,"[32,64): %f%%   ", tiles_bucket[3]*100.0/tile_m); 
+  fprintf(stream,"[64,128): %f%%  ", tiles_bucket[4]*100.0/tile_m); 
+  fprintf(stream,"[128, +OO): %f%%\n", tiles_bucket[5]*100.0/tile_m); 
+
+  fprintf(stream,"Arrays m=%d, n=%d, k=%d. Tile %d × %d.   nnz=%d  Avg deg=%.1f\n",
          m, n, k, tm, tn, nnz, double(nnz)/m);
 
-  printf("nnz / tile: %.3f  Load / B elt  %.3f\n",
+  fprintf(stream,"nnz / tile: %.3f  Load / B elt  %.3f\n",
          double(nnz) / n_tiles,
          n_col_sum / double(nnz) );
   int n_t_hist_pr = 0;
-  printf("Tile nnz histogram: (n_tiles %d)\n",n_tiles);
+  fprintf(stream,"Tile nnz histogram: (n_tiles %d)\n",n_tiles);
   for ( uint i=0; i<tile_nnz_histo.size(); i++ )
     if ( auto tnnz = tile_nnz_histo[i]; tnnz )
       {
         if ( n_t_hist_pr++ > 6 ) break;
-        printf("%3d %5.2f%%, ", i, tnnz * 100.0 / n_tiles);
+        fprintf(stream,"%3d %5.2f%%, ", i, tnnz * 100.0 / n_tiles);
       }
-  printf("\n");
+  fprintf(stream,"\n");
 }
 
 
