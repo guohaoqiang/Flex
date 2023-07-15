@@ -2,7 +2,6 @@
 
 wget https://sparse.tamu.edu/MM/SNAP/soc-sign-epinions.tar.gz
 wget https://sparse.tamu.edu/MM/SNAP/web-NotreDame.tar.gz
-wget https://sparse.tamu.edu/MM/SNAP/wiki-Vote.tar.gz
 
 
 
@@ -17,7 +16,7 @@ do
     cd ${i}
     ii=${i/\//}
     ../conv ${ii}.mtx ${ii}.csv
-    mv ${ii}.csv ..
+    mv ${ii}.csv ../..
     cd ..
     rm -rf ${ii}
 done

@@ -933,8 +933,8 @@ void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const i
           if ( h_gold[i*n+j] == 0 ) nz++;
             if (abs(h_gold[i*n+j]-h_res[i*n+j])>=0.1){
                 count++;
-                if (j==0) 
-                    std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_gold[i*n+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res[i*n+j]<<std::endl;
+                //if (j==0) 
+                //    std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_gold[i*n+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res[i*n+j]<<std::endl;
             }
         }
     }
@@ -950,7 +950,7 @@ void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const i
 void run(DataLoader& input_vo){
 
     // Prepare a DFS-ordered matrix.
-    DataLoaderDFS input_dfs(input_vo);
+    //DataLoaderDFS input_dfs(input_vo);
     //DataLoaderDeg input_deg(input_vo);
     //DataLoaderRcm input_rcm(input_vo);
     DataLoaderGorder input_gorder(input_vo);
@@ -1034,9 +1034,9 @@ void run(DataLoader& input_vo){
        kernels.emplace_back(info.GET_INFO((k)),#k,sidx); }
 
     #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
-      EXAMINE_KERNEL1(k,sidx,input_dfs);\
       EXAMINE_KERNEL1(k,sidx,input_gorder);\
       EXAMINE_KERNEL1(k,sidx,input_vo);
+    //  EXAMINE_KERNEL1(k,sidx,input_dfs);\
     //EXAMINE_KERNEL1(k,sidx,input_deg);EXAMINE_KERNEL1(k,sidx,input_rcm);
     
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\

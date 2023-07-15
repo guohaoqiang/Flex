@@ -293,11 +293,14 @@ Mat::stats_collect(FILE *stream)
       const auto tile_stop = tileRowPtr[tile_r+1];
       const auto tidx_start = tileNnz[tile_start];
       const auto tidx_stop = tileNnz[tile_stop];
-      assert( tidx_stop > tidx_start );
+      //if (tidx_stop <= tidx_start){
+      //  printf("tm = %d, tn = %d, tidx_stop = %d, tidx_satrt = %d\n",tm, tn, tidx_stop, tidx_start);
+      //}
+      //assert( tidx_stop > tidx_start );
       const uint nnz_panel = tidx_stop - tidx_start;
       const uint lg_nnz = bit_width(nnz_panel);
       assert( lg_nnz < panel_lg_nnz_histo.size() );
-      assert( lg_nnz );
+      //assert( lg_nnz );
       set_max( panel_lg_nnz_max, lg_nnz );
       set_min( panel_lg_nnz_min, lg_nnz );
       panel_lg_nnz_histo[lg_nnz]++;

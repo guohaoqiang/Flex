@@ -124,7 +124,7 @@ DataLoader::cuda_alloc_cpy()
                 temp_v = (temp_v&0x7fffff) | 0x40000000; 
                 //cpuX.push_back(j);
                 //cpuX.push_back(i*dim+j);
-                cpuX.push_back( *((float*)&temp_v) - 3.0f);
+                cpuX.push_back( *((float*)&temp_v) - 3.0f );
             }
         }
     }
