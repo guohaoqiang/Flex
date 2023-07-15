@@ -10,6 +10,7 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
 
     vertex_order_abbr = "OVO"; // Original Vertex Order.
     //cpuA = std::make_unique<CSR>();
+    //printf("%d of %s\n",__LINE__,__FILE__);
     std::fstream fin;
     fin.open(data_path,std::ios::in);
     //std::cout<<this->data_path<<std::endl;
@@ -17,18 +18,21 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     //std::cout<<this->data_path+"\/"+"n_"+name0+".csv"<<std::endl;
     std::string line, word;
     
+    //printf("%d of %s\n",__LINE__,__FILE__);
     std::getline(fin,line);
     std::stringstream ss1(line);
     while(std::getline(ss1,word,',')){
         rowPtr.push_back(std::stoi(word));        
     }
     
+    //printf("%d of %s\n",__LINE__,__FILE__);
     std::getline(fin,line);
     std::stringstream ss2(line);
     while(std::getline(ss2,word,',')){
         col.push_back(std::stoi(word));        
     }
     
+    //printf("%d of %s\n",__LINE__,__FILE__);
     if (data_name == "amazon.csv"){
         // amazon.csv only contains row offset and col indice
         fin.close(); 
@@ -73,8 +77,10 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         //exit(0);
         c = 100;
     }
+    vo_mp.resize(m);
+    std::iota(vo_mp.begin(), vo_mp.end(), 0);
     //gpuA = std::make_unique<dCSR>();
-
+    //printf("%d of %s\n",__LINE__,__FILE__);
     cuda_alloc_cpy();
 }
 
@@ -111,12 +117,19 @@ DataLoader::cuda_alloc_cpy()
     gpuC_bytes = C_elts * sizeof( cpuC[0] );
     CUDA_CHECK(cudaMalloc(&gpuC, gpuC_bytes));
     CUDA_CHECK(cudaMemset(gpuC, 0, gpuC_bytes));
-    
-    for (int i=0; i<n*dim; ++i){
-        cpuX.push_back((float)rand()/RAND_MAX);
-        //cpuX.push_back(1.0);
+    if (vertex_order_abbr == "OVO"){
+        for (int i=0; i<n; ++i){
+            for (int j=0; j<dim; ++j){
+                unsigned int temp_v = (rand()<<16)|rand();
+                temp_v = (temp_v&0x7fffff) | 0x40000000; 
+                //cpuX.push_back(j);
+                //cpuX.push_back(i*dim+j);
+                cpuX.push_back( *((float*)&temp_v) - 3.0f);
+            }
+        }
     }
 
+    //printf("%d of %s\n",__LINE__,__FILE__);
     gpuX_bytes = cpuX.size() * sizeof( cpuX[0] );
 
     CUDA_CHECK(cudaMalloc(&gpuX, gpuX_bytes ) );
@@ -148,6 +161,9 @@ DataLoader::DataLoader(const DataLoader& dl)
 
 DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 {
+    for ( auto bb:dl.cpuX ){
+        cpuX.push_back(bb);
+    }
   // Renumber the vertices based on a depth-first search of the graph in
   // dl, starting at vertex 0.
 
@@ -191,6 +207,13 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
     }
   vo_to_dfs[0] = 0;
 
+  //printf("%d of %s\n",__LINE__,__FILE__);
+  vo_mp.resize(m);
+  for (ul i=0; i<vo_to_dfs.size(); ++i){
+      ul v = vo_to_dfs[i];
+      vo_mp[v] = i;
+  }
+  //printf("%d of %s\n",__LINE__,__FILE__);
   //
   // Copy destinations (col) and edge weights (vals) from dl to this object.
   //
@@ -198,7 +221,11 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
     {
       const auto src_dfs = vo_to_dfs[src_vo];
       const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
-      assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
+      if( rowPtr[src_dfs] + d != rowPtr[src_dfs+1] ){
+          printf("rowPtr_len = %d, rowPtr[%d] + %d = %d,  rowPtr[%d+1] = %d\n", 
+                  rowPtr.size(),   src_dfs, d, rowPtr[src_dfs] + d, src_dfs,rowPtr[src_dfs+1]);
+          assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
+      }
 
       // Sort destinations.  Tiling algorithm needs dests sorted.
       vector< pair<float,uint> > perm;  perm.reserve(d);
@@ -252,6 +279,9 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 
 DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
 {
+    for ( auto bb:dl.cpuX ){
+        cpuX.push_back(bb);
+    }
   vertex_order_abbr = "DEG";
 
   assert( dl.rowPtr.size() == n + 1 );
@@ -270,7 +300,7 @@ DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
   //
   // According to renumbered vertex order, generate rowPtr 
   //  
-  vector<ul> vo_mp(m);
+  vo_mp.resize(m);
   for (ul i=0; i<vo_to_deg.size(); ++i){
       ul v = vo_to_deg[i];
       vo_mp[v] = i;
@@ -313,6 +343,9 @@ DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
 
 DataLoaderRcm::DataLoaderRcm(const DataLoader& dl):DataLoader(dl)
 {
+    for ( auto bb:dl.cpuX ){
+        cpuX.push_back(bb);
+    }
   vertex_order_abbr = "RCM";
 
   assert( dl.rowPtr.size() == n + 1 );
@@ -333,7 +366,7 @@ DataLoaderRcm::DataLoaderRcm(const DataLoader& dl):DataLoader(dl)
   //
   // According to renumbered vertex order, generate rowPtr 
   //  
-  vector<ul> vo_mp(m);
+  vo_mp.resize(m);
   for (ul i=0; i<vo_to_rcm.size(); ++i){
       ul v = vo_to_rcm[i];
       vo_mp[v] = i;
@@ -375,6 +408,9 @@ DataLoaderRcm::DataLoaderRcm(const DataLoader& dl):DataLoader(dl)
 
 DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
 {
+    for ( auto bb:dl.cpuX ){
+        cpuX.push_back(bb);
+    }
   vertex_order_abbr = "GOR";
 
   assert( dl.rowPtr.size() == n + 1 );
@@ -395,7 +431,7 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
   //
   // According to renumbered vertex order, generate rowPtr 
   //  
-  vector<ul> vo_mp(m);
+  vo_mp.resize(m);
   for (ul i=0; i<vo_to_gorder.size(); ++i){
       ul v = vo_to_gorder[i];
       vo_mp[v] = i;

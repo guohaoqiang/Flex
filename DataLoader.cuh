@@ -9,12 +9,14 @@
 #include <cstdlib>
 #include <assert.h>
 #include <iomanip>
+#include <numeric>
 #include "common.h"
 #include "order_deg.cuh"
 #include "order_rcm.cuh"
 #include "order_gorder.cuh"
 
 #define COL_MAJ_TILE
+#define VO_RECOVER
 
 class DataLoader{
 public:
@@ -28,6 +30,8 @@ public:
     std::vector<unsigned int> rowPtr;
     std::vector<unsigned int> col;
     std::vector<float> vals;
+
+    std::vector<int> vo_mp;
     
     bool compare();
     void print_data();
