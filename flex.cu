@@ -1179,6 +1179,10 @@ void run(DataLoader& input_vo){
                  aki.name_base,ki.cfa.numRegs, ki.cfa.localSizeBytes);
         }
 
+    const char* stats_file_name = "flex-tile-stats.log";
+    FILE *tile_stats = fopen(stats_file_name,"w");
+    printf("Writing detailed statistics to file %s\n",stats_file_name);
+
     pTable table(stdout);
     for ( int id: torder ){
         
@@ -1186,7 +1190,9 @@ void run(DataLoader& input_vo){
         DataLoader& input = mat.dl;
         spMats[id].csr2tile();
         
-        mat.stats_collect(false);
+        fprintf(tile_stats,"** Data for kernel %s\n",kernels[id].name_base);
+        mat.stats_collect(tile_stats);
+        fprintf(tile_stats,"\n");
         if ( table.num_lines == 0 ){
            printf("cuSpmm setup/µs: %.2f , prosessing/µs: %.2f, total/µs: %.2f\n",
                    perfRes.cuSpmmSetup,perfRes.cuSpmmProcessing,perfRes.cuSpmm_time); 
@@ -1482,6 +1488,7 @@ void run(DataLoader& input_vo){
         spMats[id].freeMatGPU();
     }
 
+    fclose(tile_stats);
     free(h_res_c);
 
 #ifdef OUTPUTCSV
