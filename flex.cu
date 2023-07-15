@@ -829,44 +829,57 @@ void flexspmm_cuda_wo_pre_v9(){
                     int nnz_cur_tile = __shfl_sync(FULL_MASK, nnz_of_tile, tile_cnt);
                     //int bitmap_cur_tile = __shfl_sync(FULL_MASK, bitmap_of_tile, tile_cnt);
                     int col_cur_tile = __shfl_sync(FULL_MASK, col_of_tile, tile_cnt);
+                    
+                    const int n_rounds = nnz_cur_tile / WARPSZ;
+                    for ( int rnd = 0;  rnd < n_rounds;  rnd++ )
+                      {
+                        // load sparse nnz from glb mem
+                        const int vidx = start_cur_tile + rnd*WARPSZ + lane_id;
+                        const float val = md.vals_dev[vidx];
+                        const int rcidx = md.rcOffset_dev[vidx];
+
+                        // exchange nnz within a warp && perfom FMA
+                        for (int it=0; it<WARPSZ; ++it){
+                          float v = __shfl_sync(FULL_MASK, val, it);
+                          RC16 rc( __shfl_sync(FULL_MASK, rcidx, it) );
+                          res[rc.c] +=
+                            v * md.shadow_b_dev[(col_cur_tile+rc.r)*md.k + col_idx + lane_id];
+                        }
+                      }
+
+                    const uint nnz_remaining = nnz_cur_tile % WARPSZ;
+                    const int vidx_base = start_cur_tile + n_rounds * WARPSZ;
+
                     auto do_n = [&](int n)
                      {
                        for ( int z=0; z<n; z++ )
                          {
-                           float val = md.vals_dev[start_cur_tile+z];
-                           int rcidx = md.rcOffset_dev[start_cur_tile+z];
-                           int x_row = col_cur_tile + (rcidx & 0xffff);
-                           res[rcidx>>16] += val
-                             * md.shadow_b_dev[x_row*md.k + col_idx + lane_id];
+                           float val = md.vals_dev[ vidx_base + z ];
+                           RC16 rc( md.rcOffset_dev[ vidx_base + z ] );
+                           int x_row = col_cur_tile + rc.r;
+                           res[ rc.c ] +=
+                             val * md.shadow_b_dev[x_row*md.k + col_idx + lane_id];
                          }
                      };
-					// visit all nz of the sparse tile
-                    if (nnz_cur_tile<=32){
-                        do_n(nnz_cur_tile);
-                    }else{ 
-                        int steps = 1;
-                        int cur_end = start_cur_tile+nnz_cur_tile;
-                        for (int kk=start_cur_tile; kk<cur_end; kk+=steps){
-                            uint32_t mask_join = __ballot_sync(FULL_MASK, kk+lane_id<cur_end);
-                            steps = __popc(mask_join);
 
-                            float val = 0;
-                            int rcidx = 0;
-                            if (kk+lane_id<cur_end){
-                                // load sparse nnz from glb mem
-                                val = md.vals_dev[kk+lane_id];
-                                rcidx = md.rcOffset_dev[kk+lane_id];
-                            }
-                            // exchange nnz within a warp && perfom FMA
-                            for (int it=0; it<steps; ++it){
-                                float v = __shfl_sync(FULL_MASK, val, it);
-                                int rc = __shfl_sync(FULL_MASK, rcidx, it);
-
-                                //res[rc>>16] += v * curB[warp_id][(rc & 0x0000ffff)*32 + lane_id];
-                                res[rc>>16] += v * md.shadow_b_dev[(col_cur_tile+(rc & 0xffff))*md.k + col_idx + lane_id];
-                            }
-                        }// end visiting all nz in a sparse tile
-                    }
+                    if ( nnz_remaining ){
+                      #define C5(n) C4(n) C4(n+16)
+                      #define C4(n) C3(n) C3(n+8)
+                      #define C3(n) C2(n) C2(n+4)
+                      #define C2(n) C1(n) C1(n+2)
+                      #define C1(n) C0(n) C0(n+1)
+                      #define C0(n) case n: do_n(n); break;
+                      switch ( nnz_remaining ) {
+                        C2(1);  // This generates do_n(1) to do_n(4)
+                      default: do_n( nnz_remaining ); break;
+                      }
+                      #undef C5
+                      #undef C4
+                      #undef C3
+                      #undef C2
+                      #undef C1
+                      #undef C0
+                    }    
                 }// end visiting all loaded sparse tiles
             }// end visiting all sparse tiles in cur tile-row
             
