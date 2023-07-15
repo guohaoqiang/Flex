@@ -4,7 +4,7 @@
 __constant__ Mat_POD mat_dev;
 
 Mat::Mat(DataLoader& input, int tileh,int tilew)
-         :dl(input),rowPtr(input.rowPtr),colIdx(input.col),vals(input.vals){
+         :dl(input),rowPtr(input.rowPtr),colIdx(input.col),vals(input.vals),voMp(input.vo_mp){
             m = input.n;
             n = m;
             k = input.dim;
@@ -16,13 +16,17 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
 			newVals.resize(input.nnz);
 			pos = 0;
             bitMap_bytes = 0; 
+            voMp_bytes = 0; 
 }
 void Mat::launch_prep(){
     dl.gpuC_zero();
     mat_b_dev = dl.gpuX;
+    if (dl.vertex_order_abbr == "OVO"){
+       shadow_b_dev = dl.gpuX; 
+    }
     mat_c_dev = dl.gpuC;
     Mat_POD for_dev(*this);
-    cudaMemcpyToSymbol(mat_dev, &for_dev, sizeof(for_dev), 0, cudaMemcpyHostToDevice);
+    CHECK_CUDA(cudaMemcpyToSymbol(mat_dev, &for_dev, sizeof(for_dev), 0, cudaMemcpyHostToDevice));
 }
 void Mat::transfer(){
 #   define CMALC(var)                                   \
@@ -33,6 +37,9 @@ void Mat::transfer(){
      CMALC( tileRowPtr ); CMALC( nnzTile ); CMALC( rcOffset );
 #ifndef COL_MAJ_TILE
 CMALC( bitMap );
+#endif
+#ifdef VO_RECOVER
+CMALC( voMp );
 #endif
 #   undef CMALC
 
@@ -46,9 +53,18 @@ CMALC( bitMap );
     cudaMemcpy(bitMap_dev, bitMap.data(), bitMap.size()*sizeof(int), cudaMemcpyHostToDevice);
 #endif
     cudaMemcpy(rcOffset_dev, rcOffset.data(), rcOffset.size()*sizeof(int), cudaMemcpyHostToDevice);
+#ifdef VO_RECOVER
+    cudaMemcpy(voMp_dev, voMp.data(), voMp.size()*sizeof(int), cudaMemcpyHostToDevice);
+    if (dl.vertex_order_abbr != "OVO"){
+        CHECK_CUDA(cudaMalloc( &shadow_b_dev,  m*k*sizeof(float))) ;
+        CHECK_CUDA(cudaMemset( shadow_b_dev,  0, m*k*sizeof(float))) ;
+    }
+#endif
 }
 void Mat::dataVolume_est(){
     est_fp = int64_t(nnz)*k;
+    // shadow_b_bytes is identical to gpuX_bytes when perform v9
+    // so dl.gpuX_bytes can be seen shadow_b_bytes when v9
     est_ld_bytes = int64_t(tileNnz_bytes) + 
                     tileColIdx_bytes + 
                     vals_bytes + 
@@ -56,7 +72,8 @@ void Mat::dataVolume_est(){
                     tileRowPtr_bytes + 
                     nnzTile_bytes + 
                     bitMap_bytes + 
-                    rcOffset_bytes;
+                    rcOffset_bytes +
+                    voMp_bytes;
     est_st_bytes = dl.gpuC_bytes;
 }
 

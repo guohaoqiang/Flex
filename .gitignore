@@ -2,3 +2,4 @@
 flex
 *.o
 *.d
+*.csv

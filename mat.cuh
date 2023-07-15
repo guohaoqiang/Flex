@@ -21,8 +21,10 @@ class Mat_POD{
     int* nnzTile_dev;
     int* bitMap_dev;
     int* rcOffset_dev;
+    int* voMp_dev;
 
     float* mat_b_dev;
+    float* shadow_b_dev;
     float* mat_c_dev;
 };
 extern __constant__ Mat_POD mat_dev;
@@ -48,6 +50,7 @@ class Mat : public Mat_POD{
     std::vector<int> nnzTile;
     std::vector<int> bitMap;
     std::vector<int> rcOffset;
+    std::vector<int> voMp;
     
     int64_t est_fp = 0;
     int64_t est_ld_bytes = 0;
@@ -59,7 +62,8 @@ class Mat : public Mat_POD{
     int nnzTile_bytes;
     int bitMap_bytes;
     int rcOffset_bytes;
-    int mat_b_bytes;
+    int voMp_bytes;
+    int mat_b_bytes; // == size of shadow_b_dev 
     int mat_c_bytes;
 
   // Statistics
@@ -84,6 +88,9 @@ class Mat : public Mat_POD{
       cuda_freez(bitMap_dev);
 #endif
       cuda_freez(rcOffset_dev);
+#ifdef VO_RECOVER
+      cuda_freez(voMp_dev);
+#endif
     }
     
 };

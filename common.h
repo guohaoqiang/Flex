@@ -73,8 +73,8 @@ public:
 {                                                                              \
     cudaError_t status = (func);                                               \
     if (status != cudaSuccess) {                                               \
-        printf("CUDA API failed at line %d with error: %s (%d)\n",             \
-               __LINE__, cudaGetErrorString(status), status);                  \
+        printf("CUDA API failed at line %d with error: %s (%d) in %s\n",             \
+               __LINE__, cudaGetErrorString(status), status, __FILE__);                  \
        /* return EXIT_FAILURE; */                                                  \
     }                                                                          \
 }
