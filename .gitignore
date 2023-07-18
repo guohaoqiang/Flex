@@ -3,3 +3,4 @@ flex
 *.o
 *.d
 *.csv
+*.log
