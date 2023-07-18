@@ -1,7 +1,8 @@
 #!/bin/bash
 
 wget https://sparse.tamu.edu/MM/SNAP/soc-sign-epinions.tar.gz
-wget https://sparse.tamu.edu/MM/SNAP/web-NotreDame.tar.gz
+#wget https://sparse.tamu.edu/MM/SNAP/web-NotreDame.tar.gz
+wget https://sparse.tamu.edu/MM/SNAP/wiki-Vote.tar.gz
 
 
 
