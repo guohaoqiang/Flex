@@ -23,6 +23,7 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     std::stringstream ss1(line);
     while(std::getline(ss1,word,',')){
         rowPtr.push_back(std::stoi(word));        
+        //printf("rowId = %d \n",rowPtr.back());
     }
     
     //printf("%d of %s\n",__LINE__,__FILE__);
@@ -122,9 +123,9 @@ DataLoader::cuda_alloc_cpy()
             for (int j=0; j<dim; ++j){
                 unsigned int temp_v = (rand()<<16)|rand();
                 temp_v = (temp_v&0x7fffff) | 0x40000000; 
-                //cpuX.push_back(j);
-                //cpuX.push_back(i*dim+j);
                 cpuX.push_back( *((float*)&temp_v) - 3.0f );
+                //cpuX.push_back(i);
+                //cpuX.push_back(i*dim+j);
             }
         }
     }

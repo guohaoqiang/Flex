@@ -13,11 +13,13 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
 			tm = tileh;
             tn = tilew;
 			tileRowPtr.push_back(0);
+			segPtr.push_back(0);
 			tileNnz.push_back(0);
 			newVals.resize(input.nnz);
 			pos = 0;
             bitMap_bytes = 0; 
             voMp_bytes = 0; 
+            nnz_limit = 64;
 }
 void Mat::launch_prep(){
     dl.gpuC_zero();
@@ -62,6 +64,40 @@ CMALC( voMp );
     }
 #endif
 }
+void Mat::transfer2(){
+#   define CMALC(var)                                   \
+     var##_bytes = var.size() * sizeof( var[0] );        \
+     CHECK_CUDA(cudaMalloc( &var##_dev, var##_bytes )) ;
+
+     CMALC( segPtr ); CMALC( segNzRowIdx ); CMALC( segNzColIdx ); 
+     CMALC( vals ); CMALC( voMp ); CMALC( segVoMap );
+#   undef CMALC
+
+    // transfer data to device
+    cudaMemcpy(segNzRowIdx_dev, segNzRowIdx.data(), segNzRowIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(segNzColIdx_dev, segNzColIdx.data(), segNzColIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(vals_dev, newVals.data(), newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(segPtr_dev, segPtr.data(), segPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(segVoMap_dev, segVoMap.data(), segVoMap.size()*sizeof(int), cudaMemcpyHostToDevice);
+    
+    cudaMemcpy(voMp_dev, voMp.data(), voMp.size()*sizeof(int), cudaMemcpyHostToDevice);
+    if (dl.vertex_order_abbr != "OVO"){
+        CHECK_CUDA(cudaMalloc( &shadow_b_dev,  m*k*sizeof(float))) ;
+        CHECK_CUDA(cudaMemset( shadow_b_dev,  0, m*k*sizeof(float))) ;
+    }
+}
+void Mat::dataVolume_est2(){
+    est_fp = int64_t(nnz)*k;
+    // shadow_b_bytes is identical to gpuX_bytes when perform v9
+    // so dl.gpuX_bytes can be seen shadow_b_bytes when v9
+    est_ld_bytes = int64_t(segNzRowIdx_bytes) + 
+                    segNzColIdx_bytes + 
+                    vals_bytes + 
+                    dl.gpuX_bytes +
+                    segPtr_bytes + 
+                    segVoMap_bytes;
+    est_st_bytes = dl.gpuC_bytes;
+}
 void Mat::dataVolume_est(){
     est_fp = int64_t(nnz)*k;
     // shadow_b_bytes is identical to gpuX_bytes when perform v9
@@ -81,12 +117,145 @@ void Mat::dataVolume_est(){
 void Mat::csr2tile(){
 	
 	int tileRows = (m+tm-1)/tm;
-		
 	for (int i=0; i<tileRows; ++i){
 		//csr2flex_Rmajor(i);
-		csr2flex_Cmajor(i);
+		//csr2flex_Cmajor(i);
 		//csr2regular(i);
+        csr2seg_Cmajor(i);
 	} 
+    n_segs = segPtr.size()-1;
+    if ( false ) print3();
+}
+void Mat::print3(){
+    printf("\nSegPtr: \n");
+    for (int i=0; i<segPtr.size(); ++i){
+        printf("(%d:%d)  ",i,segPtr[i]);
+    }
+    printf("\nSegRowNzIdx: %d\n",(int)segNzRowIdx.size());
+    for (int i=0; i<segNzRowIdx.size(); ++i){
+        printf("%d  ",segNzRowIdx[i]);
+    }
+    printf("\nSegColNzIdx: %d\n",(int)segNzColIdx.size());
+    for (int i=0; i<segNzColIdx.size(); ++i){
+        printf("%d  ",segNzColIdx[i]);
+    }
+    printf("\nSegVoMap: %d\n",(int)segVoMap.size());
+    for (int i=0; i<segVoMap.size(); ++i){
+        printf("%d->%d  ",i,segVoMap[i]&0x7fffffff);
+    }
+    printf("\n");
+}
+
+void Mat::csr2seg_Cmajor(int ridx){
+	// row tile upper bound and lower bound
+	int rowStart = ridx * tm;
+	int rowEnd = min(m, (ridx+1)*tm); // exclusive
+
+	// keep track of the cols in each row
+	std::vector<int> cOffset(tm, 0);
+	
+    int dif = 0.1*nnz_limit; 
+    int nnzInSeg = 0;
+    int nnz_cur_panel = rowPtr[rowEnd] - rowPtr[rowStart];    
+    vector<int> atom(tm, 0);
+
+    // collect segs in the panel
+    for ( int j=0; j<n; ++j ){
+        
+        for ( int i=rowStart; i<rowEnd; ++i ){
+            // absolute position of the nze in csr, idx = base + offset
+            int c = rowPtr[i] + cOffset[i-rowStart];
+            if ( colIdx[c]==j && c<rowPtr[i+1] ){
+                // nze values
+                segNzRowIdx.push_back(i-rowStart);
+                segNzColIdx.push_back(j);
+                newVals[pos++] = vals[c];
+                if ( false ) printf("%d: (%d, %d, %f)  ",nnzInSeg, i, j, vals[c]);
+                cOffset[i-rowStart]++;
+                atom[i-rowStart]++;
+                nnzInSeg++;
+            }
+        }
+        if ( (j==n-1 && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
+            //printf("%d->%d  ",segPtr.back(),nnzInSeg);
+            segPtr.push_back(segPtr.back()+nnzInSeg);
+            nnzInSeg = 0;
+            
+            for (int i=rowStart; i<rowStart+tm; ++i){
+                if ( i<rowEnd ){
+                    if ( atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
+                        // if the #nz in a specific row of a seg 
+                        // is less than that of the whole row,
+                        // the row requires "atomic add".
+                        // use MSB to mark it.
+                        segVoMap.push_back( voMp[i] | (1<<31) );
+                    }else{ 
+                        segVoMap.push_back( voMp[i] );
+                    }
+                }else{
+                    // for the last panel, the rows may be less than tm 
+                    segVoMap.push_back(1<<(bit_width((uint)m)+1));
+                }
+                atom[ i-rowStart ] = 0;
+            }
+        }
+    }
+}
+
+void
+Mat::stats_collect2(FILE *stream)
+{
+  //const uint seg_m = ( m + tm - 1 ) / tm;
+  //const uint seg_m_floor = m / tm;
+  
+  const uint seg_nnz_lim = tm * n;
+  assert( seg_nnz_lim == tm * uint64_t(n) ); // Overflow check.
+  const uint seg_lg_nnz_lim = bit_width(seg_nnz_lim);
+  uint seg_lg_nnz_max = 0, seg_lg_nnz_min = seg_lg_nnz_lim;
+  seg_lg_nnz_histo.resize(seg_lg_nnz_lim+1);
+
+  const uint n_segs = segPtr.size()-1;
+
+  n_col_sum = 0;
+  for ( uint seg_idx = 0; seg_idx < n_segs; seg_idx++ )
+    {
+      const uint nnz_seg = segPtr[seg_idx+1] - segPtr[seg_idx];
+      const uint lg_nnz = bit_width(nnz_seg);
+      set_max( seg_lg_nnz_max, lg_nnz );
+      set_min( seg_lg_nnz_min, lg_nnz );
+      seg_lg_nnz_histo[lg_nnz]++;
+      
+      unordered_set<int> colset; 
+      for (int i=segPtr[seg_idx]; i<segPtr[seg_idx+1]; ++i){
+        colset.insert(segNzColIdx[i]);
+      }
+      n_col_sum += colset.size();
+    }
+
+  if ( !stream ) return;
+
+  fprintf(stream, "Ordering %s.  Segments %d × *\n",
+          dl.vertex_order_abbr.c_str(), tm);
+
+  fprintf(stream, "Histogram of lg non-zeros per tile-segment.\n");
+
+  pTable lg_nnz_tab(stream);
+  for ( auto i: views::iota(seg_lg_nnz_min,seg_lg_nnz_max+1) )
+    {
+      pTable_Row _(lg_nnz_tab);
+      lg_nnz_tab.entry("Lg", "%2d", i);
+      lg_nnz_tab.entry("Seg", "%7d", seg_lg_nnz_histo[i] );
+      lg_nnz_tab.entry
+        ("Pct", "%6.2f", seg_lg_nnz_histo[i] * 100.0 / n_segs );
+    }
+
+  fprintf(stream,"Arrays m=%d, n=%d, k=%d. tile-seg %d × *.   nnz=%d  Avg deg=%.1f\n",
+         m, n, k, tm, nnz, double(nnz)/m);
+
+  fprintf(stream,"nnz / seg: %.3f  Load / B elt  %.3f\n",
+         double(nnz) / n_segs,
+         n_col_sum / double(nnz) );
+  fprintf(stream,"\n");
 }
 
 // convert a row of tiles to FlexSpTiles
