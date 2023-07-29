@@ -3,6 +3,7 @@
 #include <vector>
 #include <iostream>
 #include <algorithm>
+#include <unordered_set>
 #include <stdio.h>
 #include "common.h"
 #include "DataLoader.cuh"
@@ -14,6 +15,7 @@ class Mat_POD{
 	int m,n,k;
 	int nnz;
 	int tm,tn;
+    int n_segs;
 	
     int* tileNnz_dev;
     int* tileColIdx_dev;
@@ -27,6 +29,11 @@ class Mat_POD{
     float* mat_b_dev;
     float* shadow_b_dev;
     float* mat_c_dev;
+	
+    int* segPtr_dev; 
+	int* segVoMap_dev; 
+	int* segNzRowIdx_dev; 
+	int* segNzColIdx_dev; 
 };
 extern __constant__ Mat_POD mat_dev;
 class Mat : public Mat_POD{
@@ -40,7 +47,9 @@ class Mat : public Mat_POD{
     Mat(DataLoader& mat, int tileh, int tilew);
 	void print1();
 	void print2();
+	void print3();
     void stats_collect(FILE *stream = nullptr);
+    void stats_collect2(FILE *stream = nullptr);
     
 	void csr2tile();
 
@@ -52,6 +61,16 @@ class Mat : public Mat_POD{
     std::vector<int> bitMap;
     std::vector<int> rcOffset;
     std::vector<int> voMp;
+    
+	std::vector<unsigned int> segPtr; 
+	std::vector<unsigned int> segVoMap; 
+	std::vector<unsigned int> segNzRowIdx; 
+	std::vector<unsigned int> segNzColIdx; 
+    int nnz_limit;
+	int segPtr_bytes = 0; 
+	int segVoMap_bytes = 0; 
+	int segNzRowIdx_bytes = 0; 
+	int segNzColIdx_bytes = 0; 
     
     int64_t est_fp = 0;
     int64_t est_ld_bytes = 0;
@@ -71,15 +90,26 @@ class Mat : public Mat_POD{
   std::vector<uint> tile_p_row_histo;  // Histogram of number of tiles per row.
   std::vector<uint> tile_nnz_histo;    // Histogram of number of nz per tile.
   std::vector<uint> panel_lg_nnz_histo;
+  std::vector<uint> seg_lg_nnz_histo;
   int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
 
+	void csr2seg_Cmajor(int i);
 	void csr2flex_Rmajor(int i);
 	void csr2flex_Cmajor(int i);
     void transfer();
+    void transfer2();
     void dataVolume_est();
+    void dataVolume_est2();
     void launch_prep();
 
     
+    void freeMatGPU2(){
+      cuda_freez(segNzRowIdx_dev);
+      cuda_freez(segNzColIdx_dev);
+      cuda_freez(segPtr_dev);
+      cuda_freez(segVoMap_dev);
+      cuda_freez(voMp_dev);
+    }
     void freeMatGPU(){
       cuda_freez(tileNnz_dev);
       cuda_freez(tileColIdx_dev);

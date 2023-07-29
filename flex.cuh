@@ -17,7 +17,7 @@
 #define RECT64X4
 #define RECT128X4
 #define RECT256X4
-
+/*
 #define RECT4X8
 #define CUBE8X8
 #define RECT16X8
@@ -27,7 +27,7 @@
 #define RECT256X8
 
 #define RECT4X16
-#define RECT8X16
+define RECT8X16
 #define CUBE16X16
 #define RECT32X16
 #define RECT64X16
@@ -41,7 +41,7 @@
 #define RECT64X32
 #define RECT128X32
 #define RECT256X32
-
+*/
 /*
 void run_test(float* h_res_c, 
                 DataLoader& input, 
