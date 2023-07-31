@@ -20,6 +20,7 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
             bitMap_bytes = 0; 
             voMp_bytes = 0; 
             nnz_limit = 64;
+            atomic_op = 0;
 }
 void Mat::launch_prep(){
     dl.gpuC_zero();
@@ -230,6 +231,14 @@ Mat::stats_collect2(FILE *stream)
         colset.insert(segNzColIdx[i]);
       }
       n_col_sum += colset.size();
+
+
+      for (int row_offset=0; row_offset<tm; ++row_offset){
+          int flag = (segVoMap[seg_idx*tm+row_offset] & (1<<31)) >> 31;
+          if (flag){
+            atomic_op++; 
+          }
+      }
     }
 
   if ( !stream ) return;

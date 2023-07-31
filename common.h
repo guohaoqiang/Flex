@@ -109,7 +109,8 @@ inline bool set_max(T& accum, const T2& v)
 template<typename T, typename T2>
 inline bool set_min(T& accum, const T2& v)
 {
-  if ( v >= accum ) return false;
+  //if ( v >= accum ) return false;
+  if ( v==0 || v >= accum ) return false;
   accum = v;
   return true;
 }
