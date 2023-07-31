@@ -910,12 +910,7 @@ void flexspmm_cuda_wo_pre_v10(){
 
     timing_start();
 
-	float res[tm];
     int gold_row_id[tm];
-	#pragma unroll
-	for (int i=0; i<tm; ++i){
-		res[i] = 0;
-	}
     
     for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
         
@@ -930,7 +925,8 @@ void flexspmm_cuda_wo_pre_v10(){
         const int n_rounds = nnz_cur_seg / WARPSZ; 
         
         for ( int c_col=lane_id; c_col<md.k; c_col += blockDim.x ){ // over C columns
-               
+            float res[tm]{};
+
             for ( int rnd = 0; rnd < n_rounds; ++rnd ){
 
                 // load sparse nz from glb mem
@@ -998,7 +994,6 @@ void flexspmm_cuda_wo_pre_v10(){
                         md.mat_c_dev[ addr ] = res[c];
                     }
                 }
-                res[c] = 0;
             }
              
         }// end C colums
