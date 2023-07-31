@@ -1417,17 +1417,9 @@ void run(DataLoader& input_vo){
               //table.entry
               //  ("Tile", "%-6s",
               //   to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
-              table.entry
-                ("tm", "%3s",
-                 to_string(spMats[id].tm));
-
-              table.entry
-                ("wps", "%3s",
-                 to_string(blks_p_sm));
-              
-              table.entry
-                ("atm/r", "%5.2f",
-                 to_string((double)mat.atomic_op/mat.m));
+              table.entry("tm", "%3d", spMats[id].tm);
+              table.entry("wps", "%3d", blks_p_sm);
+              table.entry("atm/r", "%5.2f", double(mat.atomic_op)/mat.m );
               
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;

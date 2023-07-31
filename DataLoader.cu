@@ -212,7 +212,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
       const auto src_dfs = vo_to_dfs[src_vo];
       const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
       if( rowPtr[src_dfs] + d != rowPtr[src_dfs+1] ){
-          printf("rowPtr_len = %d, rowPtr[%d] + %d = %d,  rowPtr[%d+1] = %d\n", 
+          printf("rowPtr_len = %zd, rowPtr[%d] + %d = %d,  rowPtr[%d+1] = %d\n", 
                   rowPtr.size(),   src_dfs, d, rowPtr[src_dfs] + d, src_dfs,rowPtr[src_dfs+1]);
           assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
       }
