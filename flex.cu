@@ -917,20 +917,20 @@ void flexspmm_cuda_wo_pre_v10(){
 		res[i] = 0;
 	}
     
-    //for ( int c_col=0; c_col<; c_col += 1 ){ // over C columns
-        for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
-           
-            #pragma unroll
-            for (int i=0; i<tm; ++i){
-                gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
-            }
-
-            int seg_cur_id = 0, seg_nxt_id = 0;
-            seg_cur_id = md.segPtr_dev[seg_idx]; 
-            seg_nxt_id = md.segPtr_dev[seg_idx+1]; 
-            int nnz_cur_seg = seg_nxt_id - seg_cur_id;
-            
-            const int n_rounds = nnz_cur_seg / WARPSZ; 
+    for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
+        }
+        int seg_cur_id = 0, seg_nxt_id = 0;
+        seg_cur_id = md.segPtr_dev[seg_idx]; 
+        seg_nxt_id = md.segPtr_dev[seg_idx+1]; 
+        int nnz_cur_seg = seg_nxt_id - seg_cur_id;
+        const int n_rounds = nnz_cur_seg / WARPSZ; 
+        
+        for ( int c_col=lane_id; c_col<md.k; c_col += blockDim.x ){ // over C columns
+               
             for ( int rnd = 0; rnd < n_rounds; ++rnd ){
 
                 // load sparse nz from glb mem
@@ -945,7 +945,7 @@ void flexspmm_cuda_wo_pre_v10(){
                   int v_r = __shfl_sync(FULL_MASK, ridx, it);
                   int v_c = __shfl_sync(FULL_MASK, cidx, it);
                   res[v_r] +=
-                    v * md.shadow_b_dev[ v_c*md.k + warp_id*WARPSZ + lane_id ];
+                    v * md.shadow_b_dev[ v_c*md.k + warp_id*WARPSZ + c_col ];
                 }    
             }
             
@@ -961,7 +961,7 @@ void flexspmm_cuda_wo_pre_v10(){
                    int cidx = md.segNzColIdx_dev[ vidx_base + z ];
                    
                    res[ ridx ] +=
-                     val * md.shadow_b_dev[ cidx*md.k + warp_id*WARPSZ + lane_id];
+                     val * md.shadow_b_dev[ cidx*md.k + warp_id*WARPSZ + c_col];
                  }
              };
 
@@ -991,7 +991,7 @@ void flexspmm_cuda_wo_pre_v10(){
                  
                 if ( actual_row<md.m ){
                     int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
-                    int addr = actual_row*md.k + warp_id*WARPSZ + lane_id;
+                    int addr = actual_row*md.k + warp_id*WARPSZ + c_col;
                     if ( atomicORnot>>31 ){
                         atomicAdd( &md.mat_c_dev[ addr ], res[c]);
                     }else{
@@ -1000,10 +1000,9 @@ void flexspmm_cuda_wo_pre_v10(){
                 }
                 res[c] = 0;
             }
-            
-            
-        } // end tile-segs loops
-    //}// end C colums
+             
+        }// end C colums
+    } // end tile-segs loops
         timing_end();
 }
 
