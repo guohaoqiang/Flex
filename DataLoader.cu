@@ -9,31 +9,22 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     graph_name = data_name.substr(0, data_name.find(".")); 
 
     vertex_order_abbr = "OVO"; // Original Vertex Order.
-    //cpuA = std::make_unique<CSR>();
-    //printf("%d of %s\n",__LINE__,__FILE__);
     std::fstream fin;
     fin.open(data_path,std::ios::in);
-    //std::cout<<this->data_path<<std::endl;
-    //std::cout<<name0<<std::endl;
-    //std::cout<<this->data_path+"\/"+"n_"+name0+".csv"<<std::endl;
     std::string line, word;
     
-    //printf("%d of %s\n",__LINE__,__FILE__);
     std::getline(fin,line);
     std::stringstream ss1(line);
     while(std::getline(ss1,word,',')){
         rowPtr.push_back(std::stoi(word));        
-        //printf("rowId = %d \n",rowPtr.back());
     }
     
-    //printf("%d of %s\n",__LINE__,__FILE__);
     std::getline(fin,line);
     std::stringstream ss2(line);
     while(std::getline(ss2,word,',')){
         col.push_back(std::stoi(word));        
     }
     
-    //printf("%d of %s\n",__LINE__,__FILE__);
     if (data_name == "amazon.csv"){
         // amazon.csv only contains row offset and col indice
         fin.close(); 
@@ -80,8 +71,6 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     }
     vo_mp.resize(m);
     std::iota(vo_mp.begin(), vo_mp.end(), 0);
-    //gpuA = std::make_unique<dCSR>();
-    //printf("%d of %s\n",__LINE__,__FILE__);
     cuda_alloc_cpy();
 }
 
@@ -90,7 +79,6 @@ DataLoader::cuda_alloc_cpy()
 {
 #ifdef AXW
     //LOG(INFO) << "Initialize X & W ...";
-    //printf("%d of %s, Initialize X & W ...",__LINE__,__FILE__);
     for (int i=0; i<c*dim; ++i){
         cpuW.push_back((float)rand()/RAND_MAX);
     }
@@ -130,11 +118,13 @@ DataLoader::cuda_alloc_cpy()
         }
     }
 
-    //printf("%d of %s\n",__LINE__,__FILE__);
-    gpuX_bytes = cpuX.size() * sizeof( cpuX[0] );
+    //gpuX_bytes = cpuX.size() * sizeof( cpuX[0] );
+    gpuX_bytes = n * dim * sizeof( float );
 
-    CUDA_CHECK(cudaMalloc(&gpuX, gpuX_bytes ) );
-    CUDA_CHECK(cudaMemcpy(gpuX, cpuX.data(), gpuX_bytes, cudaMemcpyHostToDevice));
+    if (vertex_order_abbr == "OVO"){
+        CUDA_CHECK(cudaMalloc(&gpuX, gpuX_bytes ) );
+        CUDA_CHECK(cudaMemcpy(gpuX, cpuX.data(), gpuX_bytes, cudaMemcpyHostToDevice));
+    }
 }
 
 void
@@ -162,9 +152,10 @@ DataLoader::DataLoader(const DataLoader& dl)
 
 DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 {
-    for ( auto bb:dl.cpuX ){
-        cpuX.push_back(bb);
-    }
+    //for ( auto bb:dl.cpuX ){
+    //    cpuX.push_back(bb);
+    //}
+  gpuX = dl.gpuX;
   // Renumber the vertices based on a depth-first search of the graph in
   // dl, starting at vertex 0.
 
@@ -208,13 +199,11 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
     }
   vo_to_dfs[0] = 0;
 
-  //printf("%d of %s\n",__LINE__,__FILE__);
   vo_mp.resize(m);
   for (ul i=0; i<vo_to_dfs.size(); ++i){
       ul v = vo_to_dfs[i];
       vo_mp[v] = i;
   }
-  //printf("%d of %s\n",__LINE__,__FILE__);
   //
   // Copy destinations (col) and edge weights (vals) from dl to this object.
   //
@@ -280,9 +269,10 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 
 DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
 {
-    for ( auto bb:dl.cpuX ){
-        cpuX.push_back(bb);
-    }
+  //  for ( auto bb:dl.cpuX ){
+  //      cpuX.push_back(bb);
+  //  }
+  gpuX = dl.gpuX;
   vertex_order_abbr = "DEG";
 
   assert( dl.rowPtr.size() == n + 1 );
@@ -344,9 +334,10 @@ DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
 
 DataLoaderRcm::DataLoaderRcm(const DataLoader& dl):DataLoader(dl)
 {
-    for ( auto bb:dl.cpuX ){
-        cpuX.push_back(bb);
-    }
+  //  for ( auto bb:dl.cpuX ){
+  //      cpuX.push_back(bb);
+  //  }
+  gpuX = dl.gpuX;
   vertex_order_abbr = "RCM";
 
   assert( dl.rowPtr.size() == n + 1 );
@@ -409,9 +400,10 @@ DataLoaderRcm::DataLoaderRcm(const DataLoader& dl):DataLoader(dl)
 
 DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
 {
-    for ( auto bb:dl.cpuX ){
-        cpuX.push_back(bb);
-    }
+  //  for ( auto bb:dl.cpuX ){
+  //      cpuX.push_back(bb);
+  //  }
+  gpuX = dl.gpuX;
   vertex_order_abbr = "GOR";
 
   assert( dl.rowPtr.size() == n + 1 );

@@ -1256,13 +1256,13 @@ void run(DataLoader& input_vo){
     constexpr int wp_sz = 32;
     constexpr int threads = 128;  // Block Size
 
-    int max_gridx = num_sm*8+1;
+    int max_gridx = num_sm*512;
     const int grid_n_wps = threads / wp_sz * max_gridx;
     //int n_blocks_max = 0;
     //for ( auto& m: spMats ) set_max(n_blocks_max,(m.m+m.tm-1)/m.tm);
     //const int n_warps_max = threads / wp_sz * n_blocks_max;
     //vector<Timing_Item> timing_items( n_warps_max );
-    vector<Timing_Item> timing_items( grid_n_wps+1 );
+    vector<Timing_Item> timing_items( grid_n_wps );
     Timing timing_dh;
     const size_t timing_items_bytes =
       timing_items.size() * sizeof( timing_items[0] );
@@ -1314,20 +1314,20 @@ void run(DataLoader& input_vo){
         mat.transfer2();
         spMats[id].dataVolume_est2();
         spMats[id].launch_prep();
-        for ( int blks_p_sm=4; blks_p_sm<9; ++blks_p_sm ){        
-            // a block has 4 warps
-            int gridx = num_sm * blks_p_sm;
-            // V9 requires to activate the following if statement
+        // V9 requires to activate the following if statement
+    
+        // Compute the expected number of multiply/add instructions.
+        //
+        const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
+        const double n_madd_p_wp = double(n_madd) / wp_sz;
+        for ( int blks_p_sm=16; blks_p_sm<513; blks_p_sm <<= 1 ){        
             if (input.vertex_order_abbr != "OVO"){
                 const int blocks = 1024;
                 flexspmm_v9_permuteX<<<blocks, 128>>>();        
             }
-        
             pTable_Row row(table);
-            // Compute the expected number of multiply/add instructions.
-            //
-            const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
-            const double n_madd_p_wp = double(n_madd) / wp_sz;
+            // a block has 4 warps
+            int gridx = num_sm * blks_p_sm;
             
             Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
             typedef void (*KPtr)();
@@ -1425,6 +1425,10 @@ void run(DataLoader& input_vo){
               table.entry
                 ("wps", "%3s",
                  to_string(blks_p_sm));
+              
+              table.entry
+                ("atm/r", "%5.2f",
+                 to_string((double)mat.atomic_op/mat.m));
               
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;

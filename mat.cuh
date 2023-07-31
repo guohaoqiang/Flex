@@ -71,6 +71,7 @@ class Mat : public Mat_POD{
 	int segVoMap_bytes = 0; 
 	int segNzRowIdx_bytes = 0; 
 	int segNzColIdx_bytes = 0; 
+    int64_t atomic_op;
     
     int64_t est_fp = 0;
     int64_t est_ld_bytes = 0;

@@ -72,7 +72,7 @@ public:
         cuda_freez(rowPtr_dev);
         cuda_freez(col_dev);
         cuda_freez(vals_dev);
-        cuda_freez(gpuX);
+        if (vertex_order_abbr=="OVO") cuda_freez(gpuX);
         cuda_freez(gpuC);
 #ifdef AXW
         cuda_freez(gpuW);
