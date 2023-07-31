@@ -160,8 +160,13 @@ void Mat::csr2seg_Cmajor(int ridx){
     int nnz_cur_panel = rowPtr[rowEnd] - rowPtr[rowStart];    
     vector<int> atom(tm, 0);
 
+    map<int,int> occ_cols;
+    for ( auto c: views::iota(rowPtr[rowStart],rowPtr[rowEnd]) )
+      occ_cols[colIdx[c]]++;
+    const auto last_col = occ_cols.rbegin()->first;
+
     // collect segs in the panel
-    for ( int j=0; j<n; ++j ){
+    for ( auto [j,ncol]: occ_cols ) {
         
         for ( int i=rowStart; i<rowEnd; ++i ){
             // absolute position of the nze in csr, idx = base + offset
@@ -177,7 +182,7 @@ void Mat::csr2seg_Cmajor(int ridx){
                 nnzInSeg++;
             }
         }
-        if ( (j==n-1 && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
+        if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
             //printf("%d->%d  ",segPtr.back(),nnzInSeg);
             segPtr.push_back(segPtr.back()+nnzInSeg);
             nnzInSeg = 0;
@@ -231,15 +236,9 @@ Mat::stats_collect2(FILE *stream)
         colset.insert(segNzColIdx[i]);
       }
       n_col_sum += colset.size();
-
-
-      for (int row_offset=0; row_offset<tm; ++row_offset){
-          int flag = (segVoMap[seg_idx*tm+row_offset] & (1<<31)) >> 31;
-          if (flag){
-            atomic_op++; 
-          }
-      }
     }
+
+  for ( uint32_t v: segVoMap ) if ( v & (1u<<31) ) atomic_op++;
 
   if ( !stream ) return;
 
@@ -258,8 +257,9 @@ Mat::stats_collect2(FILE *stream)
         ("Pct", "%6.2f", seg_lg_nnz_histo[i] * 100.0 / n_segs );
     }
 
-  fprintf(stream,"Arrays m=%d, n=%d, k=%d. tile-seg %d × *.   nnz=%d  Avg deg=%.1f\n",
-         m, n, k, tm, nnz, double(nnz)/m);
+  fprintf(stream,"Arrays m=%d, n=%d, k=%d. tile-seg %d × *.\n"
+          "              n_segs=%u, nnz=%d  Avg deg=%.1f\n",
+         m, n, k, tm, n_segs, nnz, double(nnz)/m);
 
   fprintf(stream,"nnz / seg: %.3f  Load / B elt  %.3f\n",
          double(nnz) / n_segs,
