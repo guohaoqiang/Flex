@@ -94,6 +94,8 @@ class Mat : public Mat_POD{
   std::vector<uint> seg_lg_nnz_histo;
   int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
 
+  int row_nnz_get(int r) const { return rowPtr[r+1] - rowPtr[r]; }
+
 	void csr2seg_Cmajor(int i);
 	void csr2flex_Rmajor(int i);
 	void csr2flex_Cmajor(int i);
