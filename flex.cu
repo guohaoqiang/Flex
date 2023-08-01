@@ -92,6 +92,25 @@ void flexspmm_v9_permuteX(){
 	} // end C row loops    
 }
 
+__global__
+void flexspmm_vec_permuteX(){
+    // preprocess dense mat B. out-of-place permutation of B rows
+    const Mat_POD& md = mat_dev;
+    const int rows_p_blk = blockDim.x / 32; // a warp moves a row
+    const int lane_id = threadIdx.x % 32;
+	for (int row_idx=blockIdx.x*rows_p_blk+threadIdx.x/32; row_idx<md.n; row_idx += (gridDim.x*rows_p_blk)){ // over C rows
+      
+        int tgt_row = md.voMp_dev[row_idx];  
+        float *shadow_b_addr = &md.shadow_b_dev[ row_idx*md.k ];
+        float *mat_b_addr = &md.mat_b_dev[ tgt_row*md.k ];
+        for (int i = lane_id; i<md.k/4; i += 32){
+            reinterpret_cast<float4*>(shadow_b_addr)[ i ] = reinterpret_cast<float4*>(mat_b_addr)[ i ]; 
+        }
+
+        int remainder = md.k%4;
+
+	} // end C row loops    
+}
 
 // args:
 //		tileRowPtr: tile ptr for the 1st tile in each row
@@ -929,7 +948,7 @@ void flexspmm_cuda_wo_pre_v10(){
         int nnz_cur_seg = seg_nxt_id - seg_cur_id;
         const int n_rounds = nnz_cur_seg / WARPSZ; 
         
-        for ( int c_col=lane_id; c_col<md.k; c_col += blockDim.x ){ // over C columns
+        for ( int c_col= threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
                
             for ( int rnd = 0; rnd < n_rounds; ++rnd ){
 
@@ -945,7 +964,7 @@ void flexspmm_cuda_wo_pre_v10(){
                   int v_r = __shfl_sync(FULL_MASK, ridx, it);
                   int v_c = __shfl_sync(FULL_MASK, cidx, it);
                   res[v_r] +=
-                    v * md.shadow_b_dev[ v_c*md.k + warp_id*WARPSZ + c_col ];
+                    v * md.shadow_b_dev[ v_c*md.k + c_col ];
                 }    
             }
             
@@ -961,7 +980,7 @@ void flexspmm_cuda_wo_pre_v10(){
                    int cidx = md.segNzColIdx_dev[ vidx_base + z ];
                    
                    res[ ridx ] +=
-                     val * md.shadow_b_dev[ cidx*md.k + warp_id*WARPSZ + c_col];
+                     val * md.shadow_b_dev[ cidx*md.k + c_col];
                  }
              };
 
@@ -991,7 +1010,7 @@ void flexspmm_cuda_wo_pre_v10(){
                  
                 if ( actual_row<md.m ){
                     int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
-                    int addr = actual_row*md.k + warp_id*WARPSZ + c_col;
+                    int addr = actual_row*md.k + c_col;
                     if ( atomicORnot>>31 ){
                         atomicAdd( &md.mat_c_dev[ addr ], res[c]);
                     }else{
@@ -999,6 +1018,138 @@ void flexspmm_cuda_wo_pre_v10(){
                     }
                 }
                 res[c] = 0;
+            }
+             
+        }// end C colums
+    } // end tile-segs loops
+        timing_end();
+}
+
+template<int tm, int tn, int warps>
+__global__
+void flexspmm_cuda_w_vec4_v11(){
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+	const uint32_t WARPSZ = 32;
+    //const uint32_t wps = blockDim.x / WARPSZ;
+	const uint32_t lane_id = threadIdx.x % WARPSZ;
+    //const uint32_t warp_id = threadIdx.x / WARPSZ;
+
+    timing_start();
+
+    int gold_row_id[tm];
+	//#pragma unroll
+	//for (int i=0; i<tm; ++i){
+	//	res[i][0] = 0;
+	//	res[i][1] = 0;
+	//	res[i][2] = 0;
+	//	res[i][3] = 0;
+	//}
+    
+    for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
+        }
+        int seg_cur_id = 0, seg_nxt_id = 0;
+        seg_cur_id = md.segPtr_dev[seg_idx]; 
+        seg_nxt_id = md.segPtr_dev[seg_idx+1]; 
+        int nnz_cur_seg = seg_nxt_id - seg_cur_id;
+        const int n_rounds = nnz_cur_seg / WARPSZ; 
+       
+        for ( int c_col=threadIdx.x; c_col<md.k/4; c_col += blockDim.x ){ // over C columns
+	        float res[tm][4]{};
+               
+            for ( int rnd = 0; rnd < n_rounds; ++rnd ){
+
+                // load sparse nz from glb mem
+                const int vidx = seg_cur_id + rnd*WARPSZ + lane_id;
+                const float val = md.vals_dev[vidx];
+                const int ridx = md.segNzRowIdx_dev[vidx];
+                const int cidx = md.segNzColIdx_dev[vidx];
+                
+                // exchange nnz within a warp && perfom FMA
+                for (int it=0; it<WARPSZ; ++it){
+                  float v = __shfl_sync(FULL_MASK, val, it);
+                  int v_r = __shfl_sync(FULL_MASK, ridx, it);
+                  int v_c = __shfl_sync(FULL_MASK, cidx, it);
+                  float *shadow_b_addr = &md.shadow_b_dev[ v_c*md.k ];
+                  float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
+                  res[v_r][0] += v * b_vec.x;
+                  res[v_r][1] += v * b_vec.y;
+                  res[v_r][2] += v * b_vec.z;
+                  res[v_r][3] += v * b_vec.w;
+                }    
+            }
+            
+            const uint nnz_remaining = nnz_cur_seg % WARPSZ;
+            const int vidx_base = seg_cur_id + n_rounds * WARPSZ;
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   float val = md.vals_dev[ vidx_base + z ];
+                   int ridx = md.segNzRowIdx_dev[ vidx_base + z ];
+                   int cidx = md.segNzColIdx_dev[ vidx_base + z ];
+                   
+                   float *shadow_b_addr = &md.shadow_b_dev[ cidx*md.k ];
+                   float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
+                   res[ridx][0] += val * b_vec.x;
+                   res[ridx][1] += val * b_vec.y;
+                   res[ridx][2] += val * b_vec.z;
+                   res[ridx][3] += val * b_vec.w;
+                 }
+             };
+
+            if ( nnz_remaining ){
+              #define C5(n) C4(n) C4(n+16)
+              #define C4(n) C3(n) C3(n+8)
+              #define C3(n) C2(n) C2(n+4)
+              #define C2(n) C1(n) C1(n+2)
+              #define C1(n) C0(n) C0(n+1)
+              #define C0(n) case n: do_n(n); break;
+              switch ( nnz_remaining ) {
+                C2(1);  // This generates do_n(1) to do_n(4)
+              default: do_n( nnz_remaining ); break;
+              }
+              #undef C5
+              #undef C4
+              #undef C3
+              #undef C2
+              #undef C1
+              #undef C0
+            } 
+            
+            // store C tiles back to global mem
+            //#pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 0 ], res[c][0]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[c][1]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[c][2]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[c][3]);
+                    }else{
+                        float* mat_c = &md.mat_c_dev[ addr ];
+                        float4 vect4_c = {res[c][0], res[c][1], res[c][2], res[c][3]}; 
+                        reinterpret_cast<float4*>(mat_c)[ c_col ] = vect4_c; 
+                        //md.mat_c_dev[ addr + c_col*4 + 0 ] = res[c][0];
+                        //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[c][1];
+                        //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[c][2];
+                        //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[c][3];
+                    }
+                }
+                //res[c][0] = 0;
+                //res[c][1] = 0;
+                //res[c][2] = 0;
+                //res[c][3] = 0;
             }
              
         }// end C colums
@@ -1041,7 +1192,7 @@ void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const i
           if ( h_gold[i*n+j] == 0 ) nz++;
             if (abs(h_gold[i*n+j]-h_res[i*n+j])>=0.1){
                 count++;
-                if (j==0) 
+                //if (j==2) 
                     std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_gold[i*n+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res[i*n+j]<<std::endl;
             }
         }
@@ -1160,8 +1311,8 @@ void run(DataLoader& input_vo){
 // v7-v8 need to activate macro "COL_MAJ_TILE" in DataLoader.cuh. 
 // v4-v6 need to deactivate macro "COL_MAJ_TILE" in DataLoader.cuh.   
 // v9 need to deactivate macro "VO_RECOVER" in DataLoader.cuh.   
-#define flex_kernel flexspmm_cuda_wo_pre_v10
-//#define flex_kernel flexspmm_cuda_wo_pre_v8
+//#define flex_kernel flexspmm_cuda_wo_pre_v10
+#define flex_kernel flexspmm_cuda_w_vec4_v11
 
 #ifdef CUBE4X4
         SPECIFY_KERNEL(flex_kernel, 0, NBX, NBY, NT);
@@ -1313,17 +1464,29 @@ void run(DataLoader& input_vo){
         mat.transfer2();
         spMats[id].dataVolume_est2();
         spMats[id].launch_prep();
-        // V9 requires to activate the following if statement
     
         // Compute the expected number of multiply/add instructions.
         //
         const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
         const double n_madd_p_wp = double(n_madd) / wp_sz;
         for ( int blks_p_sm=16; blks_p_sm<513; blks_p_sm <<= 1 ){        
+            // V9,V10 require comment out the following if statement
             if (input.vertex_order_abbr != "OVO"){
                 const int blocks = 1024;
-                flexspmm_v9_permuteX<<<blocks, 128>>>();        
+                //flexspmm_v9_permuteX<<<blocks, 128>>>();        
+                flexspmm_vec_permuteX<<<blocks, 128>>>();        
+                if ( false ){
+                    float *test_b = (float*)malloc( mat.n * mat.k * sizeof(float) );
+                    CE ( cudaMemcpy(test_b, mat.shadow_b_dev, mat.n * mat.k * sizeof(float), cudaMemcpyDeviceToHost) );
+                    for ( int l=0; l<mat.n; ++l ){
+                        printf("b[%d] = %f, ", l,test_b[l*mat.k+0]);
+                    }
+                    free( test_b );
+                    printf("\n");
+                }
             }
+            //continue;
+
             pTable_Row row(table);
             // a block has 4 warps
             int gridx = num_sm * blks_p_sm;
