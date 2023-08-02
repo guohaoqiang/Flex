@@ -1178,27 +1178,64 @@ constexpr tileConf tileConfs[] =
      ,{4,16},{8,16},{16,16},{32,16},{64,16},{128,16},{256,16}
      ,{4,32},{8,32},{16,32},{32,32},{64,32},{128,32},{256,32}
     };
-void resCheck(float* h_gold, float* h_res, int m, int n, Perfs& perfRes, const int tm, const int tn){
+
+void
+resCheck(float* h_gold, float* h_res, const Mat& mat, Perfs& perfRes)
+{
+    const int tm = mat.tm;
+    const int tn = mat.tn;
+    const int m = mat.m;
+    const int n = mat.k;
     // verify results
     int count = 0;
     int nz = 0;
-    //std::cout<<"Verify result accuracy ("<< to_string(tm) << "X" << to_string(tn) << ") ... " <<std::endl; 
-    for (int i=0; i<m; ++i){
-        for (int j=0; j<n; ++j){
-          if ( h_gold[i*n+j] == 0 ) nz++;
-            if (abs(h_gold[i*n+j]-h_res[i*n+j])>=0.1){
-                count++;
-                //if (j==2) 
-                    std::cout<<"ref["<<i<<"]["<<j<<"]="<<h_gold[i*n+j]<<", "<<"gpuC["<<i<<"]["<<j<<"]="<<h_res[i*n+j]<<std::endl;
-            }
+
+    double max_err = 0;
+    int me_nnz = 0;
+
+    for (int r=0; r<m; ++r){
+
+        const int row_nnz = mat.row_nnz_get(r);
+        const double tol = numeric_limits<float>::epsilon() * row_nnz * 4;
+        //
+        // The tolerance above is for partial products that are about
+        // 1. The tolerance will miss errors when partial products are
+        // < 1 and it will result in false positives when partial
+        // products are larger than one.
+
+        for (int c=0; c<n; ++c){
+          const int idx = r*n+c;
+          if ( h_gold[idx] == 0 ) nz++;
+          const double err =
+            fabs(h_gold[idx]) < 1 ? fabs( double(h_gold[idx]) - h_res[idx] )
+            : fabs( 1.0 - double(h_res[idx])/h_gold[idx] );
+          if ( set_max(max_err,err) ) me_nnz = row_nnz;
+          if ( err > tol ) {
+            count++;
+            if ( count == 1 )
+              cout << "Verify result accuracy ("
+                   << to_string(tm) << "X" << to_string(tn)
+                   << ").  Errors:" << endl;
+            if ( count < 5 )
+              printf(" ref[%d][%d]:  %f!=%f (correct)"
+                     "  %d nnzs, dif %g, tol %g\n",
+                     r, c, h_res[idx], h_gold[idx],
+                     row_nnz, err, tol);
+          }
         }
     }
+
     perfRes.flex_spmm_errors.push_back(count);
     if (count>0)
-        std::cout<<"Kernel ("<< to_string(tm) << "X" << to_string(tn) << ") errs: " << count<<std::endl;
+      {
+        cout <<"Kernel ("<< to_string(tm) << "X" << to_string(tn)
+             << ") errs: " << count;
+        printf(" Max err %g at nnz=%d.\n", max_err, me_nnz);
+      }
+    assert( !count );
 
     // If correct result has too many zeros it will be hard to catch errors.
-    //assert( nz < n/2 );
+    assert( nz < n/2 );
 
     memset(h_res, 0, n*m*sizeof(float));
 }
@@ -1768,13 +1805,8 @@ void run(DataLoader& input_vo){
             cudaMemcpy
               ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
                 cudaMemcpyDeviceToHost);
-            //resCheck
-            //  ( input.h_ref_c.data(), h_res_c, spMats[id].m, spMats[id].k,
-            //    perfRes, spMats[id].tm, spMats[id].tn);
-            resCheck
-              ( input_vo.h_ref_c.data(), h_res_c, spMats[id].m, spMats[id].k,
-                perfRes, spMats[id].tm, spMats[id].tn);
-            
+            resCheck( input_vo.h_ref_c.data(), h_res_c, spMats[id], perfRes );
+
             float t = elap_t*(1e-3);
             perfRes.flex_spmm_time.push_back(t);
         } // warps confiuration
