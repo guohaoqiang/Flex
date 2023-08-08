@@ -35,6 +35,7 @@ public:
     
     bool compare();
     void print_data();
+    void print4(int, bool);
     
     std::vector<float> cpuX; // n * dim
     std::vector<float> cpuW; // dim * c
