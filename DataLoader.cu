@@ -27,11 +27,13 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     
     if (data_name == "amazon.csv"){
         // amazon.csv only contains row offset and col indice
-       fin.close(); 
+        fin.close(); 
         std::cout<<"Amazon n = "<<rowPtr.size()-1<<std::endl;
         std::cout<<"Amazon nnz = "<<col.size()<<std::endl;
         for (size_t i=0; i<col.size(); ++i){
-            vals.push_back((float)rand()/RAND_MAX/100);        
+            unsigned int temp_v = (rand()<<16)|rand();
+            temp_v = (temp_v&0x7fffff) | 0x40000000; 
+            vals.push_back( *((float*)&temp_v) - 3.0f );
         }
     }else{
         std::getline(fin,line);
