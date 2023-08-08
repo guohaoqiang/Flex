@@ -24,8 +24,8 @@ SpMM: Sparse-dense matrix multiplication
 ## Vertex Ordering
 The code for DEG,RCM and Gorder was taken from [here](https://github.com/lecfab/rescience-gorder)
 
-## ASpT[here](http://gitlab.hpcrl.cse.ohio-state.edu/chong/ppopp19_ae) results
-|    ASpT   |               3090            ||               4090              |
+## [ASpT](http://gitlab.hpcrl.cse.ohio-state.edu/chong/ppopp19_ae) results
+|    ASpT   |    3090    |        |          |    4090    |         |          |
 |:---------:|:----------:|:------:|----------|:----------:|:-------:|----------|
 |           | tPre/tElap | GFlops | Errs (%) | tPre/tElap |  GFlops | Errs (%) |
 |   Pubmed  |    92.5    | 311.39 | 0.005    |    18.7    |  639.8  | 0.005    |
