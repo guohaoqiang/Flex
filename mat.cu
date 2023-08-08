@@ -19,7 +19,7 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
 			pos = 0;
             bitMap_bytes = 0; 
             voMp_bytes = 0; 
-            nnz_limit = 64;
+            nnz_limit = NNZ_LIMIT;
             atomic_op = 0;
 }
 void Mat::launch_prep(){
@@ -70,11 +70,12 @@ void Mat::transfer2(){
      var##_bytes = var.size() * sizeof( var[0] );        \
      CHECK_CUDA(cudaMalloc( &var##_dev, var##_bytes )) ;
 
-     CMALC( segPtr ); CMALC( segNzRowIdx ); CMALC( segNzColIdx ); 
+     CMALC( segPtr ); CMALC( segNzRCIdx ); CMALC( segNzRowIdx ); CMALC( segNzColIdx ); 
      CMALC( vals ); CMALC( voMp ); CMALC( segVoMap );
 #   undef CMALC
 
     // transfer data to device
+    cudaMemcpy(segNzRCIdx_dev, segNzRCIdx.data(), segNzRCIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(segNzRowIdx_dev, segNzRowIdx.data(), segNzRowIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(segNzColIdx_dev, segNzColIdx.data(), segNzColIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(vals_dev, newVals.data(), newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
@@ -125,23 +126,35 @@ void Mat::csr2tile(){
         csr2seg_Cmajor(i);
 	} 
     n_segs = segPtr.size()-1;
-    if ( false ) print3();
+    if ( false ){ 
+        for (int i=0; i<segNzRowIdx.size(); ++i){
+            if (segNzRowIdx[i]<0 || segNzRowIdx[i]>=tm || segNzColIdx[i]<0 || segNzColIdx[i]>=n){
+                printf("r = %d, c = %d, v = %d\n", segNzRowIdx[i], segNzColIdx[i], newVals[i]);
+            }
+        }
+        printf("segs: %d, nnz = %d, r_nnz: %d, c_nnz: %d, v_nnz: %d, segMap: %d\n", 
+                n_segs, segPtr.back(), segNzRowIdx.size(), segNzColIdx.size(), newVals.size(), segVoMap.size());
+        int ls = 5;
+        //print3(ls);
+    }
 }
-void Mat::print3(){
-    printf("\nSegPtr: \n");
-    for (int i=0; i<segPtr.size(); ++i){
-        printf("(%d:%d)  ",i,segPtr[i]);
-    }
-    printf("\nSegRowNzIdx: %d\n",(int)segNzRowIdx.size());
-    for (int i=0; i<segNzRowIdx.size(); ++i){
-        printf("%d  ",segNzRowIdx[i]);
-    }
-    printf("\nSegColNzIdx: %d\n",(int)segNzColIdx.size());
-    for (int i=0; i<segNzColIdx.size(); ++i){
-        printf("%d  ",segNzColIdx[i]);
+void Mat::print3(int l){
+    if ( false ){
+        printf("\nSegPtr: \n");
+        for (int i=0; i<l?l:segPtr.size(); ++i){
+            printf("(%d:%d)  ",i,segPtr[i]);
+        }
+        printf("\nSegRowNzIdx: %d\n",(int)segNzRowIdx.size());
+        for (int i=0; i<l?l:segNzRowIdx.size(); ++i){
+            printf("%d  ",segNzRowIdx[i]);
+        }
+        printf("\nSegColNzIdx: %d\n",(int)segNzColIdx.size());
+        for (int i=0; i<l?l:segNzColIdx.size(); ++i){
+            printf("%d  ",segNzColIdx[i]);
+        }
     }
     printf("\nSegVoMap: %d\n",(int)segVoMap.size());
-    for (int i=0; i<segVoMap.size(); ++i){
+    for (int i=0; i<(l?l:segVoMap.size()); ++i){
         printf("%d->%d  ",i,segVoMap[i]&0x7fffffff);
     }
     printf("\n");
@@ -175,21 +188,22 @@ void Mat::csr2seg_Cmajor(int ridx){
                 // nze values
                 segNzRowIdx.push_back(i-rowStart);
                 segNzColIdx.push_back(j);
+                segNzRCIdx.push_back(i-rowStart);
+                segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
-                if ( false ) printf("%d: (%d, %d, %f)  ",nnzInSeg, i, j, vals[c]);
                 cOffset[i-rowStart]++;
                 atom[i-rowStart]++;
                 nnzInSeg++;
             }
         }
         if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
-            //printf("%d->%d  ",segPtr.back(),nnzInSeg);
+         
             segPtr.push_back(segPtr.back()+nnzInSeg);
             nnzInSeg = 0;
             
             for (int i=rowStart; i<rowStart+tm; ++i){
                 if ( i<rowEnd ){
-                    if ( atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
+                    if ( atom[i-rowStart]>=0 && atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
                         // if the #nz in a specific row of a seg 
                         // is less than that of the whole row,
                         // the row requires "atomic add".
@@ -202,6 +216,7 @@ void Mat::csr2seg_Cmajor(int ridx){
                     // for the last panel, the rows may be less than tm 
                     segVoMap.push_back(1<<(bit_width((uint)m)+1));
                 }
+                
                 atom[ i-rowStart ] = 0;
             }
         }

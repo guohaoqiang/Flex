@@ -31,7 +31,9 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         std::cout<<"Amazon n = "<<rowPtr.size()-1<<std::endl;
         std::cout<<"Amazon nnz = "<<col.size()<<std::endl;
         for (size_t i=0; i<col.size(); ++i){
-            vals.push_back((float)rand()/RAND_MAX/100);        
+            unsigned int temp_v = (rand()<<16)|rand();
+            temp_v = (temp_v&0x7fffff) | 0x40000000; 
+            vals.push_back( *((float*)&temp_v) - 3.0f );
         }
     }else{
         std::getline(fin,line);
@@ -41,6 +43,8 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         }
         fin.close(); 
     }
+    //int debug_check = 16652;
+    //print4(debug_check, false);
     assert(col.size()==vals.size());
     m = rowPtr.size()-1; 
     n = m;
@@ -74,6 +78,26 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
     cuda_alloc_cpy();
 }
 
+void 
+DataLoader::print4(int l, bool s){
+    if (s){
+        for (int i=0; i<rowPtr.size()-1; ++i){
+            for (int j=rowPtr[i]; j<rowPtr[i+1]; ++j){
+                if (i==l){
+                    printf("r = %d, c = %d, v = %f\n", i, col[j], vals[j]);
+                }
+            }
+        }
+    }else{
+        for (int i=0; i<rowPtr.size()-1; ++i){
+            for (int j=rowPtr[i]; j<rowPtr[i+1]; ++j){
+                if (col[j]==l){
+                    printf("r = %d, c = %d, v = %f\n", i, col[j], vals[j]);
+                }
+            }
+        }
+    }
+}
 void
 DataLoader::cuda_alloc_cpy()
 {
