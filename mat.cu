@@ -126,17 +126,6 @@ void Mat::csr2tile(){
         csr2seg_Cmajor(i);
 	} 
     n_segs = segPtr.size()-1;
-    if ( false ){ 
-        for (int i=0; i<segNzRowIdx.size(); ++i){
-            if (segNzRowIdx[i]<0 || segNzRowIdx[i]>=tm || segNzColIdx[i]<0 || segNzColIdx[i]>=n){
-                printf("r = %d, c = %d, v = %d\n", segNzRowIdx[i], segNzColIdx[i], newVals[i]);
-            }
-        }
-        printf("segs: %d, nnz = %d, r_nnz: %d, c_nnz: %d, v_nnz: %d, segMap: %d\n", 
-                n_segs, segPtr.back(), segNzRowIdx.size(), segNzColIdx.size(), newVals.size(), segVoMap.size());
-        int ls = 5;
-        //print3(ls);
-    }
 }
 void Mat::print3(int l){
     if ( false ){
