@@ -31,9 +31,10 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         std::cout<<"Amazon n = "<<rowPtr.size()-1<<std::endl;
         std::cout<<"Amazon nnz = "<<col.size()<<std::endl;
         for (size_t i=0; i<col.size(); ++i){
-            unsigned int temp_v = (rand()<<16)|rand();
-            temp_v = (temp_v&0x7fffff) | 0x40000000; 
-            vals.push_back( *((float*)&temp_v) - 3.0f );
+            //unsigned int temp_v = (rand()<<16)|rand();
+            //temp_v = (temp_v&0x7fffff) | 0x40000000; 
+            //vals.push_back( *((float*)&temp_v) - 3.0f );
+            vals.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
         }
     }else{
         std::getline(fin,line);
@@ -133,9 +134,10 @@ DataLoader::cuda_alloc_cpy()
     if (vertex_order_abbr == "OVO"){
         for (int i=0; i<n; ++i){
             for (int j=0; j<dim; ++j){
-                unsigned int temp_v = (rand()<<16)|rand();
-                temp_v = (temp_v&0x7fffff) | 0x40000000; 
-                cpuX.push_back( *((float*)&temp_v) - 3.0f );
+                //unsigned int temp_v = (rand()<<16)|rand();
+                //temp_v = (temp_v&0x7fffff) | 0x40000000; 
+                //cpuX.push_back( *((float*)&temp_v) - 3.0f );
+                cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
                 //cpuX.push_back(i);
                 //cpuX.push_back(i*dim+j);
             }

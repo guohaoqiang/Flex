@@ -107,7 +107,8 @@ void flexspmm_vec_permuteX(){
             reinterpret_cast<float4*>(shadow_b_addr)[ i ] = reinterpret_cast<float4*>(mat_b_addr)[ i ]; 
         }
 
-        int remainder = md.k%4;
+        // for k is not a multiple of 128, TBD
+        //int remainder = md.k%4;
 
 	} // end C row loops    
 }
@@ -1418,13 +1419,12 @@ void flexspmm_cuda_w_pre_w_vec_v14(){
     // requires preprocess dense mat B
 
     const Mat_POD& md = mat_dev;
-	const uint32_t WARPSZ = 32;
     
     timing_start(); 
     
     int gold_row_id[tm];
     __shared__ int smem[2][3*(nnz_limit)+3*tm];
-    int dbl = 0;
+    //int dbl = 0;
     int *rsm1 = reinterpret_cast<int*>(smem[0]);
     int *csm1 = reinterpret_cast<int*>(&smem[0][1*(nnz_limit+tm)]);
     float *vsm1 = reinterpret_cast<float*>(&smem[0][2*(nnz_limit+tm)]);

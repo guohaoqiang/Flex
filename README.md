@@ -25,10 +25,10 @@ SpMM: Sparse-dense matrix multiplication
 The code for DEG,RCM and Gorder was taken from [here](https://github.com/lecfab/rescience-gorder)
 
 ## [ASpT](http://gitlab.hpcrl.cse.ohio-state.edu/chong/ppopp19_ae) results
-**Note**  
-tPre: time of preprocessing.  
-tElap: time of spmm.  
-GFlops: 2\*FMAs/tElap.
+>**Note**  
+>tPre: time of preprocessing.  
+>tElap: time of spmm.  
+>GFlops: 2\*FMAs/tElap.  
 
 |    ASpT   |    3090    |        |          |    4090    |         |          |
 |:---------:|:----------:|:------:|----------|:----------:|:-------:|----------|
