@@ -31,6 +31,8 @@ public:
     std::vector<unsigned int> col;
     std::vector<float> vals;
 
+    // Use vo_mp set this to dl permuted.
+    void perm_apply(const DataLoader& dl);
     std::vector<int> vo_mp;
     
     bool compare();
@@ -80,6 +82,12 @@ public:
         cuda_freez(gpuRef2);
 #endif
     }
+};
+
+class DataLoaderRabbit : public DataLoader
+{
+public:
+  DataLoaderRabbit(const DataLoader& dl);
 };
 
 class DataLoaderDFS : public DataLoader

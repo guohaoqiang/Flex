@@ -1243,6 +1243,7 @@ void run(DataLoader& input_vo){
 
     // Prepare a DFS-ordered matrix.
     DataLoaderDFS input_dfs(input_vo);
+    DataLoaderRabbit input_rabbit(input_vo);
     //DataLoaderDeg input_deg(input_vo);
     //DataLoaderRcm input_rcm(input_vo);
     DataLoaderGorder input_gorder(input_vo);
@@ -1330,6 +1331,7 @@ void run(DataLoader& input_vo){
     #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
         EXAMINE_KERNEL1(k,sidx,input_vo,nbx,nby,nt);\
         EXAMINE_KERNEL1(k,sidx,input_gorder,nbx,nby,nt);\
+        EXAMINE_KERNEL1(k,sidx,input_rabbit,nbx,nby,nt);\
         EXAMINE_KERNEL1(k,sidx,input_dfs,nbx,nby,nt);
     //EXAMINE_KERNEL1(k,sidx,input_deg);EXAMINE_KERNEL1(k,sidx,input_rcm);
     
@@ -1453,6 +1455,13 @@ void run(DataLoader& input_vo){
     CUDA_CHECK( cudaMemcpyToSymbol( timing_dev, &timing_dh, sizeof(timing_dh),
                                     0, cudaMemcpyHostToDevice ) );
 
+    const vector<string> table_order_1( { "OVO", "DFS", "GOR", "RBT" } );
+    map<string,int> table_order;
+    for ( auto& s: table_order_1 ) table_order[s] = table_order.size();
+    for ( auto& mat: spMats )
+      if ( !table_order.contains(mat.dl.vertex_order_abbr) )
+        table_order[mat.dl.vertex_order_abbr] = table_order.size();
+
     // Sort kernels so that results are grouped by vertex ordering.
     //
     vector<int> torder;
@@ -1462,9 +1471,10 @@ void run(DataLoader& input_vo){
         [&](int ai, int bi){
           Mat& a = spMats[ai];
           Mat& b = spMats[bi];
-          return a.tn == b.tn
-            ? a.dl.vertex_order_abbr < b.dl.vertex_order_abbr
-            : a.tn < b.tn;
+          return a.tm == b.tm
+            ? table_order[a.dl.vertex_order_abbr]
+            < table_order[b.dl.vertex_order_abbr]
+            : a.tm < b.tm;
         });
 
     map<string,int> kernels_seen;
