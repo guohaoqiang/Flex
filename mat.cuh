@@ -8,7 +8,7 @@
 #include "common.h"
 #include "DataLoader.cuh"
 #define DEBUG
-
+#define NNZ_LIMIT 64
 using namespace std;
 class Mat_POD{
     public:
@@ -32,6 +32,7 @@ class Mat_POD{
 	
     int* segPtr_dev; 
 	int* segVoMap_dev; 
+	int* segNzRCIdx_dev; 
 	int* segNzRowIdx_dev; 
 	int* segNzColIdx_dev; 
 };
@@ -47,7 +48,7 @@ class Mat : public Mat_POD{
     Mat(DataLoader& mat, int tileh, int tilew);
 	void print1();
 	void print2();
-	void print3();
+	void print3(int );
     void stats_collect(FILE *stream = nullptr);
     void stats_collect2(FILE *stream = nullptr);
     
@@ -66,11 +67,13 @@ class Mat : public Mat_POD{
 	std::vector<unsigned int> segVoMap; 
 	std::vector<unsigned int> segNzRowIdx; 
 	std::vector<unsigned int> segNzColIdx; 
+	std::vector<unsigned int> segNzRCIdx; 
     int nnz_limit;
 	int segPtr_bytes = 0; 
 	int segVoMap_bytes = 0; 
 	int segNzRowIdx_bytes = 0; 
 	int segNzColIdx_bytes = 0; 
+	int segNzRCIdx_bytes = 0; // == RowIdx + ColIdx
     int64_t atomic_op;
     
     int64_t est_fp = 0;
@@ -109,6 +112,7 @@ class Mat : public Mat_POD{
     void freeMatGPU2(){
       cuda_freez(segNzRowIdx_dev);
       cuda_freez(segNzColIdx_dev);
+      cuda_freez(segNzRCIdx_dev);
       cuda_freez(segPtr_dev);
       cuda_freez(segVoMap_dev);
       cuda_freez(voMp_dev);
