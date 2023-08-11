@@ -1,5 +1,6 @@
 #include "flex.cuh"
 #include <ranges>
+#include <set>
 /*
 __device__ __forceinline__
 uint32_t glm_u32addr(const void *glm_ptr) {
@@ -926,7 +927,6 @@ void flexspmm_cuda_wo_pre_v10(){
     const Mat_POD& md = mat_dev;
 	const uint32_t WARPSZ = 32;
 	const uint32_t lane_id = threadIdx.x % WARPSZ;
-    const uint32_t warp_id = threadIdx.x / WARPSZ;
 
     timing_start();
 
@@ -1159,16 +1159,11 @@ void flexspmm_cuda_w_pre_v12(){
     // requires preprocess dense mat B
 
     const Mat_POD& md = mat_dev;
-	const uint32_t WARPSZ = 32;
-    //const uint32_t wps = blockDim.x / WARPSZ;
-	const uint32_t lane_id = threadIdx.x % WARPSZ;
-    //const uint32_t warp_id = threadIdx.x / WARPSZ;
     
     timing_start(); 
     
     int gold_row_id[tm];
     __shared__ int smem[2][3*(nnz_limit)+3*tm];
-    int dbl = 0;
     int *rsm1 = reinterpret_cast<int*>(smem[0]);
     int *csm1 = reinterpret_cast<int*>(&smem[0][1*(nnz_limit+tm)]);
     float *vsm1 = reinterpret_cast<float*>(&smem[0][2*(nnz_limit+tm)]);
@@ -1638,6 +1633,7 @@ void run(DataLoader& input_vo){
     //DataLoaderRcm input_rcm(input_vo);
     DataLoaderGorder input_gorder(input_vo);
 
+    const bool opt_vary_grid_size = true;
     constexpr bool show_insn_shared = false;
     constexpr bool show_insn_local = false;
 
@@ -1703,32 +1699,34 @@ void run(DataLoader& input_vo){
     float* const h_res_c = (float*) malloc( input_vo.gpuC_bytes );
     struct App_Kernel_Info {
          App_Kernel_Info  
-         (Kernel_Info& k,const char *name, int i, int nbx, int nby, int nt):
-           k_ptr(k.func_ptr),name_base(name),shape_idx{i},
-           n_threads{nt},n_blocks_x{nbx},n_blocks_y{nby}{}
+         (Kernel_Info& k,
+          const char *name_b, const char *name_tmpl,
+          int i, int nbx, int nby, int nt):
+           k_ptr(k.func_ptr),name_base{name_b},name_tmpl{name_tmpl},
+           shape_idx{i}, n_threads{nt},n_blocks_x{nbx},n_blocks_y{nby}{}
         GPU_Info_Func k_ptr;
         const char *name_base;
+        const char *name_tmpl;
         const int shape_idx;
         const int n_blocks_x, n_blocks_y, n_threads;
     };  
     vector<App_Kernel_Info> kernels;
     vector<Mat> spMats;
     
-    #define EXAMINE_KERNEL1(k,sidx,graph,nbx,nby,nt) \
+    #define EXAMINE_KERNEL1(kb,k,sidx,graph,nbx,nby,nt) \
     {  spMats.emplace_back(graph, tileConfs[sidx].tm, tileConfs[sidx].tn); \
-       kernels.emplace_back(info.GET_INFO((k)),#k,sidx,nbx,nby,nt); }
+       kernels.emplace_back(info.GET_INFO((k)),#kb,#k,sidx,nbx,nby,nt); }
 
-    #define EXAMINE_KERNEL(k,sidx,nbx,nby,nt) \
-        EXAMINE_KERNEL1(k,sidx,input_vo,nbx,nby,nt);\
-        EXAMINE_KERNEL1(k,sidx,input_gorder,nbx,nby,nt);\
-        EXAMINE_KERNEL1(k,sidx,input_rabbit,nbx,nby,nt);\
-        EXAMINE_KERNEL1(k,sidx,input_dfs,nbx,nby,nt);
+    #define EXAMINE_KERNEL(kb,k,sidx,nbx,nby,nt) \
+        EXAMINE_KERNEL1(kb,k,sidx,input_vo,nbx,nby,nt);\
+        EXAMINE_KERNEL1(kb,k,sidx,input_gorder,nbx,nby,nt);\
+        EXAMINE_KERNEL1(kb,k,sidx,input_rabbit,nbx,nby,nt);\
+        EXAMINE_KERNEL1(kb,k,sidx,input_dfs,nbx,nby,nt);
     //EXAMINE_KERNEL1(k,sidx,input_deg);EXAMINE_KERNEL1(k,sidx,input_rcm);
     
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\
     {const int idx = kernels.size(); \
-        EXAMINE_KERNEL((k<tileConfs[sidx].tm,NNZ_LIMIT,4>), sidx, nbx, nby, nt); }
-        //EXAMINE_KERNEL((k<tileConfs[sidx].tm,tileConfs[sidx].tn,4>), sidx, nbx, nby, nt); }
+        EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,NNZ_LIMIT,4>), sidx, nbx, nby, nt); }
 // NBX,NBY,NT are useless currently
 #define NBX 1
 #define NBY 1
@@ -1739,6 +1737,22 @@ void run(DataLoader& input_vo){
 // v9 need to deactivate macro "VO_RECOVER" in DataLoader.cuh.   
 //#define flex_kernel flexspmm_cuda_w_pre_v12
 #define flex_kernel flexspmm_cuda_w_pre_w_vec_v14
+
+    // Vector size of instructions that load B matrix elements.
+    map<string,int> k_prop_vec_b
+      { { "flexspmm_cuda_w_vec4_v11", 4 },
+        { "flexspmm_cuda_w_pre_w_vec_v13", 2}
+      };
+
+    // Kernels that use a vec2 to load row/column pairs.
+    set<string> k_prop_vec2_rc { "flexspmm_cuda_w_pre_w_vec_v14" };
+
+    // RC Direct means that all threads in a warp load the same RC and
+    // wht elements from global memory. Otherwise, Different threads
+    // load different elements and shared memory or swizzles are used
+    // to distribute them.
+    set<string> k_prop_rc_direct
+      { "flexspmm_cuda_wo_pre_v10", "flexspmm_cuda_w_vec4_v11" };
 
 #ifdef CUBE4X4
         SPECIFY_KERNEL(flex_kernel, 0, NBX, NBY, NT);
@@ -1831,22 +1845,14 @@ void run(DataLoader& input_vo){
 
     constexpr int wp_sz = 32;
     constexpr int threads = 128;  // Block Size
+    constexpr int block_n_wps = threads / wp_sz;
+    assert( block_n_wps * wp_sz == threads );
 
-    int max_gridx = num_sm*512;
-    const int grid_n_wps = threads / wp_sz * max_gridx;
-    //int n_blocks_max = 0;
-    //for ( auto& m: spMats ) set_max(n_blocks_max,(m.m+m.tm-1)/m.tm);
-    //const int n_warps_max = threads / wp_sz * n_blocks_max;
-    //vector<Timing_Item> timing_items( n_warps_max );
-    vector<Timing_Item> timing_items( grid_n_wps );
-    Timing timing_dh;
-    const size_t timing_items_bytes =
-      timing_items.size() * sizeof( timing_items[0] );
-    CUDA_CHECK( cudaMalloc( &timing_dh.timing_items, timing_items_bytes ) );
-    CUDA_CHECK( cudaMemcpyToSymbol( timing_dev, &timing_dh, sizeof(timing_dh),
-                                    0, cudaMemcpyHostToDevice ) );
+    vector<Timing_Item> timing_items;
+    Timing timing_dh{nullptr};
+    size_t timing_items_bytes = 0;
 
-    const vector<string> table_order_1( { "OVO", "DFS", "GOR", "RBT" } );
+    const vector<string> table_order_1( { "OVO", "DEG", "DFS", "GOR", "RBT" } );
     map<string,int> table_order;
     for ( auto& s: table_order_1 ) table_order[s] = table_order.size();
     for ( auto& mat: spMats )
@@ -1870,11 +1876,11 @@ void run(DataLoader& input_vo){
 
     map<string,int> kernels_seen;
     for ( auto& i: torder )
-      if ( App_Kernel_Info& aki = kernels[i]; !kernels_seen[aki.name_base]++ )
+      if ( App_Kernel_Info& aki = kernels[i]; !kernels_seen[aki.name_tmpl]++ )
         {
           Kernel_Info& ki = info.get_info(aki.k_ptr);
           printf("Kernel %s:  %d regs,  %zd local\n",
-                 aki.name_base,ki.cfa.numRegs, ki.cfa.localSizeBytes);
+                 aki.name_tmpl,ki.cfa.numRegs, ki.cfa.localSizeBytes);
         }
 
     const char* stats_file_name = "flex-tile-stats.log";
@@ -1887,8 +1893,10 @@ void run(DataLoader& input_vo){
         
         Mat& mat = spMats[id];
         DataLoader& input = mat.dl;
+        App_Kernel_Info& aki = kernels[id];
+
         spMats[id].csr2tile();
-        fprintf(tile_stats,"** Data for kernel %s\n",kernels[id].name_base);
+        fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
         mat.stats_collect2(tile_stats);
         fprintf(tile_stats,"\n");
         if ( table.num_lines == 0 ){
@@ -1898,40 +1906,60 @@ void run(DataLoader& input_vo){
         mat.transfer2();
         spMats[id].dataVolume_est2();
         spMats[id].launch_prep();
-    
+
+        if (input.vertex_order_abbr != "OVO"){
+                const int blocks = num_sm * 8;
+                flexspmm_v9_permuteX<<<blocks, 128>>>();        
+                if ( false ){
+                  vector<float> test_b( mat.n * mat.k );
+                  CE ( cudaMemcpy(test_b.data(), mat.shadow_b_dev,
+                                  mat.mat_b_bytes, cudaMemcpyDeviceToHost) );
+                  for ( int l=0; l<mat.n; ++l )
+                    printf("b[%d] = %f, ", l,test_b[l*mat.k+0]);
+                  printf("\n");
+                }
+            }
+
+
         // Compute the expected number of multiply/add instructions.
         //
         const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
         const double n_madd_p_wp = double(n_madd) / wp_sz;
-        for ( int blks_p_sm=4; blks_p_sm<257;  blks_p_sm <<= 1 ){        
-            // a block has 4 warps
-            int gridx = num_sm * blks_p_sm;
-            
-            // V9,V10 require comment out the following if statement
-            if (input.vertex_order_abbr != "OVO"){
-                const int blocks = 1024;
-                //flexspmm_v9_permuteX<<<blocks, 128>>>();        
-                flexspmm_vec_permuteX<<<blocks, 128>>>();        
-                if ( false ){
-                    float *test_b = (float*)malloc( mat.n * mat.k * sizeof(float) );
-                    CE ( cudaMemcpy(test_b, mat.shadow_b_dev, mat.n * mat.k * sizeof(float), cudaMemcpyDeviceToHost) );
-                    for ( int l=0; l<mat.n; ++l ){
-                        printf("b[%d] = %f, ", l,test_b[l*mat.k+0]);
-                    }
-                    free( test_b );
-                    printf("\n");
-                }
-            }
+        const double n_b_elt_p_thd = double(mat.k) / threads;
+
+        vector<uint> grid_sizes;
+
+        if ( opt_vary_grid_size )
+          for ( int n_blks = num_sm; n_blks < mat.n_segs; n_blks <<= 1 )
+            grid_sizes.push_back( n_blks );
+        grid_sizes.push_back( mat.n_segs );
+
+        // Allocate storage for timing data.
+        //
+        if ( const int max_wps = grid_sizes.back() * block_n_wps;
+             timing_items.size() < max_wps )
+          {
+            timing_items.resize( max_wps );
+            timing_items_bytes = timing_items.size() * sizeof(timing_items[0]);
+            CE( cudaFree( timing_dh.timing_items ) );
+            CE( cudaMalloc( &timing_dh.timing_items, timing_items_bytes ) );
+            CE( cudaMemcpyToSymbol
+                ( timing_dev, &timing_dh, sizeof(timing_dh),
+                  0, cudaMemcpyHostToDevice ) );
+          }
+
+        for ( const uint gridx: grid_sizes )
+          {
+            const dim3 grid_sz = { gridx, 1, 1 };
+            const int num_blocks = grid_sz.x * grid_sz.y * grid_sz.z;
+            const int grid_n_wps = num_blocks * block_n_wps;
+
             //continue;
 
             pTable_Row row(table);
-            
             Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
             typedef void (*KPtr)();
             
-            //int gridx = (spMats[id].m+spMats[id].tm-1)/spMats[id].tm;
-            //int gridx = 512;
-            //const int grid_n_wps = threads / wp_sz * gridx;
             CE( cudaMemset( timing_dh.timing_items, 0, timing_items_bytes ) );
             CE( cudaDeviceSynchronize() );
             NPerf_metrics_off();
@@ -1941,7 +1969,7 @@ void run(DataLoader& input_vo){
 
             /// Launch Kernel -- Without Performance Counter Sampling
             //
-            KPtr(ki->func_ptr)<<<gridx,threads>>>();
+            KPtr(ki->func_ptr)<<<grid_sz,threads>>>();
             //
             // Until NPerf_metrics_off is fixed event timing won't work.
 
@@ -1961,7 +1989,7 @@ void run(DataLoader& input_vo){
             //
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
             for ( NPerf_data_reset(); NPerf_need_run_get(); ){
-                KPtr(ki->func_ptr)<<<gridx,threads>>>();
+                KPtr(ki->func_ptr)<<<grid_sz,threads>>>();
             }
 
             // Compute per-sm minimum-start and maximum-finish (end) times.
@@ -2016,13 +2044,37 @@ void run(DataLoader& input_vo){
               //  ("Tile", "%-6s",
               //   to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
               table.entry("tm", "%3d", spMats[id].tm);
-              table.entry("wps", "%3d", blks_p_sm);
+
+              // The maximum number of active blocks per SM for this
+              // kernel when launched with a block size of thd_per_block.
+              //
+              const int max_bl_per_sm =
+                ki->get_max_active_blocks_per_mp(threads);
+
+              // Compute number of blocks available per SM based only on
+              // the number of blocks.  This may be larger than the
+              // number of blocks that can run.
+              //
+              const int bl_per_sm_available =
+                0.999 + double(num_blocks) / num_sm;
+
+              // The number of active blocks is the minimum of what
+              // can fit and how many are available.
+              //
+              const int bl_per_sm =
+                min( bl_per_sm_available, max_bl_per_sm );
+
+              // Based on the number of blocks, compute the number of warps.
+              //
+              const int act_wps = block_n_wps * bl_per_sm;
+
+              table.entry("b/s", "%3d", bl_per_sm_available);
+              table.entry("aw", "%2d", act_wps);
+
               table.entry("atm/r", "%5.2f", double(mat.atomic_op)/mat.m );
               
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;
-
-              table.entry( "Event/µs", "%8.2f", elap_t * 1e3 );
 
               //table.header_span( "T1", 1);
               if (false){
@@ -2046,6 +2098,7 @@ void run(DataLoader& input_vo){
 
               // Number of nz per occupied tile column.
               const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
+              // Worst-case: 1.  Ideal: Average degree.
 
               table.entry("B-Re", "%4.2f", nz_p_toc);
 
@@ -2084,20 +2137,33 @@ void run(DataLoader& input_vo){
                     + n_ld_nz / nz_p_t
                     + n_ld_b_elt / nz_p_toc;
               }
+
+              const bool v_vec2_rc = k_prop_vec2_rc.contains(aki.name_base);
+              const int vec_b_sz = max(1,k_prop_vec_b[aki.name_base]);
+
               const int n_ld_seg = mat.tm+2;  // Loads per tile-segment. (segVoMap + segPtr)
-              const int n_ld_nz = 3;    // Loads per nz. ( r , c, edge weight)
+
+              // Loads per nz. ( r , c, edge weight)
+              const int n_ld_nz = 3;
+              const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
+
               const int n_ld_b_elt = 1; // Loads per B matrix element.
-              const double n_ld_p_nz =
-                  n_ld_seg / nz_p_seg
-                + n_ld_nz / nz_p_seg * ceil(nz_p_seg/32)
-                + n_ld_b_elt / nz_p_toc;
+              const double n_ld_insn_b_elt = double(n_ld_b_elt) / vec_b_sz;
+
+              const double n_ld_p_madd =
+                (   n_ld_seg / nz_p_seg
+                  + n_ld_insn_nz /
+                    ( k_prop_rc_direct.contains(aki.name_base)
+                      ? 1.0 : nz_p_seg * ceil(nz_p_seg/32) ) )
+                / n_b_elt_p_thd
+                + n_ld_insn_b_elt / nz_p_toc;
 
               table.entry
                 ( "G", "%4.1f",
                   NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
                   / n_madd_p_wp );
 
-              table.entry( "GC", "%4.1f", n_ld_p_nz);
+              table.entry( "GC", "%4.1f", n_ld_p_madd);
 
               if ( show_insn_local )
                 table.entry
@@ -2188,6 +2254,9 @@ void run(DataLoader& input_vo){
 
               table.header_span_start("L2 ⇆ DRAM");
               table.entry
+                ( "Bytes", "%5.2f",
+                  NPerf_metric_value_get("dram__bytes.sum") / n_madd );
+              table.entry
                 ( "GB/s", "%4.0f",
                   NPerf_metric_value_get("dram__bytes.sum") / et_seconds * 1e-9 );
 
@@ -2216,8 +2285,14 @@ void run(DataLoader& input_vo){
         spMats[id].freeMatGPU2();
     }
 
+    printf("Key:  b/s,   Blocks per SM\n"
+           "      aw,    Active (Resident) Warps per SM\n"
+           "      atm/r, Atomic Operations per Row\n"
+           "      B-Re,  B Matrix Element Reuse per Segment\n");
+
     fclose(tile_stats);
     free(h_res_c);
+    cuda_freez( timing_dh.timing_items );
 
 #ifdef OUTPUTCSV
     std::ofstream myfile(input.graph_name+"_time.csv");
