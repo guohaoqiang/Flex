@@ -176,6 +176,84 @@ DataLoader::DataLoader(const DataLoader& dl)
   #undef CPY
 }
 
+
+void
+DataLoader::perm_apply(const DataLoader& dl)
+{
+  assert( rowPtr.empty() );
+
+  rowPtr.reserve( n+1 );
+  rowPtr.push_back( 0 );
+  vector<int> vold_to_new(n,n);
+
+  for ( auto v_new: views::iota(0ul,n) )
+    {
+      const int v_old = vo_mp[ v_new ];
+      assert( vold_to_new[ v_old ] == n );
+      vold_to_new[ v_old ] = v_new;
+      rowPtr.push_back( rowPtr.back() + dl.rowPtr[v_old+1] - dl.rowPtr[v_old] );
+    }
+
+  col.resize( dl.col.size() );
+  vals.resize( dl.col.size() );
+
+  //
+  // Copy destinations (col) and edge weights (vals) from dl to this object.
+  //
+  for ( auto v_old: views::iota(0ul,n) )
+    {
+      const auto v_new = vold_to_new[v_old];
+      const int d = dl.rowPtr[v_old+1] - dl.rowPtr[v_old];
+
+      // Sort destinations.  Tiling algorithm needs dests sorted.
+      vector< pair<float,uint> > perm;  perm.reserve(d);
+      const auto e_idx_old = dl.rowPtr[ v_old ];
+      for ( auto e: views::iota( e_idx_old, e_idx_old + d ) )
+        perm.emplace_back( dl.vals[ e ], vold_to_new[ dl.col[ e ] ] );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+
+      uint e_idx_new_i = rowPtr[v_new];
+      for ( auto [val, dst_new]: perm )
+        {
+          col[ e_idx_new_i ] = dst_new;
+          vals[ e_idx_new_i++ ] = val;
+        }
+    }
+
+  //
+  // Perform a rough test of whether the two graphs match.
+  //
+
+  vector<int64_t> check_old(n);
+  vector<int64_t> check_new(n);
+  vector<double> checkw_old(n);
+  vector<double> checkw_new(n);
+
+  for ( uint v_old: views::iota(0ul,n) )
+    {
+      const auto v_new = vold_to_new[v_old];
+      const int d = dl.rowPtr[v_old+1] - dl.rowPtr[v_old];
+      assert( rowPtr[v_new] + d == rowPtr[v_new+1] );
+      const int inc = v_old & 0xf;
+      for ( auto n_idx: views::iota(0,d) )
+        {
+          const uint e_idx_old = dl.rowPtr[v_old] + n_idx;
+          const uint e_idx_new = rowPtr[v_new] + n_idx;
+          check_old[ dl.col[ e_idx_old ] ] += inc;
+          check_new[ col[ e_idx_new ] ] += inc;
+          checkw_old[ dl.col[ e_idx_old ] ] += dl.vals[ e_idx_old ];
+          checkw_new[ col[ e_idx_new ] ] += vals[ e_idx_new ];
+        }
+    }
+
+  for ( uint v_old: views::iota(0ul,n) )
+    {
+      assert( check_old[v_old] == check_new[ vold_to_new[v_old] ] );
+      assert( checkw_old[v_old] == checkw_new[ vold_to_new[v_old] ] );
+    }
+}
+
+
 DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 {
     //for ( auto bb:dl.cpuX ){
@@ -292,6 +370,200 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 
   cuda_alloc_cpy();
 }
+
+DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
+{
+  /// Order vertices based on modularity, implementing several variations.
+  //
+  // Original Iterative Serial Algorithm: 
+  //   Shiokawa 13 AAAI "Fast algorithm for modularity based clustering."
+  //   https://aaai.org/papers/455-fast-algorithm-for-modularity-based- graph-clustering/
+  //   Set opt_iterative = true;
+  //
+  // Parallel Implementation. Rabbit properly refers to the parallel version.
+  //   Arai 16 IPDPS
+  //   https://ieeexplore.ieee.org/document/7515998
+  //
+  // Idea for Hub Grouping and Sorting
+  //   Balaji 23 ISPASS
+  //   https://ieeexplore.ieee.org/document/10158154
+  //   Set opt_h
+
+  vertex_order_abbr = "RBT";
+  gpuX = dl.gpuX;
+
+  // Variations from Balaji 23 ISPASS 
+  //
+  const bool opt_hub_group = false;
+  const bool opt_hub_sort = false;
+
+  // When true, operate in degree order of current set of vertices.
+  // When true, closer to Shiokawa 17 AAAI.
+  const bool opt_iterative = true;
+
+  assert( dl.rowPtr.size() == n + 1 );
+  auto dst_iter_make = [&](uint s)
+  { return ranges::subrange(&dl.col[dl.rowPtr[s]],&dl.col[dl.rowPtr[s+1]]); };
+
+  struct Tree_Node {
+    Tree_Node(Tree_Node *a, Tree_Node *b):lchild(a),rchild(b),v_idx(-1){}
+    Tree_Node(int v):lchild(nullptr),rchild(nullptr),v_idx(v){}
+    Tree_Node(){}
+    Tree_Node *lchild, *rchild;
+    int v_idx;
+    void leaves_apply( vector<int>& perm ) {
+      if ( lchild ) { lchild->leaves_apply(perm); rchild->leaves_apply(perm); }
+      else          { perm.push_back( v_idx ); } }
+  };
+
+  struct Vertex {
+    map<int,int> dst_wht; // NOT the graphs original edge weight.
+    Tree_Node leaf_node, cluster_node, *tree_node;
+    int deg, deg_orig, round;
+  };
+
+  vector<uint> v_this_round(n);
+  vector<Vertex> mgraph(n);
+  int n_edges = 0;
+
+  // Prepare structure used for Rabbit's community detection.
+  //
+  for ( auto v: views::iota(0ul,n) )
+    {
+      Vertex& vo = mgraph[v];
+      // This edge weight is used only for computing modularity. 
+      for ( auto d: dst_iter_make(v) ) if ( d != v ) vo.dst_wht[d] = 1;
+      vo.deg_orig = vo.deg = vo.dst_wht.size();
+      n_edges += vo.deg;
+      vo.leaf_node = Tree_Node(v);
+      vo.tree_node = &vo.leaf_node;
+      v_this_round[v] = v;
+      vo.round = 0;
+    }
+
+  // Note: cluster_shyness = 1 is the value used in Arai 16.
+  const double opt_cluster_shyness = 1;
+  const double two_m_inv = opt_cluster_shyness / double( 2 * n_edges );
+
+  vector<uint> v_next_round;
+
+  for ( int round = 1; !v_this_round.empty(); round++ )
+    {
+      ranges::sort
+        ( v_this_round, ranges::less(), [&](auto i){ return mgraph[i].deg; });
+
+      if ( opt_iterative )
+        printf("Rabbit round %2d, n elts %zd\n",round,v_this_round.size());
+
+      for ( auto u: v_this_round )
+        {
+          Vertex& uo = mgraph[u];
+          if ( opt_iterative && uo.round == round ) continue;
+
+          // Find neighbor of u with the largest change in modularity. (Delta Q)
+          double dQ_max = -1;
+          int v = -1;
+          const double dv_2m = uo.deg * two_m_inv;
+          for ( auto [d,w]: uo.dst_wht )
+            if ( set_max( dQ_max, w - mgraph[d].deg * dv_2m ) ) v = d;
+          if ( dQ_max <= 0 ) continue;
+
+          // Modularity improves, so u is merged into v.
+          //
+          Vertex& vo = mgraph[v];
+          vo.deg += uo.deg;
+
+          // Update links affected by "removal" of u.
+          for ( auto [d,w]: uo.dst_wht )
+            {
+              if ( d == v ) continue;
+              vo.dst_wht[d] += w;
+              auto& dodw = mgraph[d].dst_wht;
+              if ( !dodw.contains(u) ) continue;
+              dodw[v] += dodw[u];
+              dodw.erase(u);
+            }
+          vo.dst_wht.erase(u);
+
+          // Add to dendrogram for this cluster.
+          uo.cluster_node = Tree_Node(vo.tree_node,uo.tree_node);
+          uo.tree_node = nullptr;
+          vo.tree_node = &uo.cluster_node;
+
+          if ( !opt_iterative || vo.round == round ) continue;
+          vo.round = round;
+          v_next_round.push_back(v);
+        }
+
+      if ( !opt_iterative ) break;
+      assert( v_next_round.size() < v_this_round.size() );
+      swap(v_this_round,v_next_round);
+      v_next_round.clear();
+    }
+
+  // Sanity Check
+  int deg_sum = 0;
+  for ( auto& vo: mgraph ) if ( vo.tree_node ) deg_sum += vo.deg;
+  assert( deg_sum == n_edges );
+
+  int n_communities = 0;
+  int n_hub_edges = 0;
+  int n_hub_vertices = 0;
+  vector<int> vo_to_community(n);
+  vector<int> perm_rbt; perm_rbt.reserve(n);
+
+  // Compute Modularity. This time keep the 1/(2m) factor. (m is n_edges)
+  double q = 0;
+  const double twom_inv = 1.0 / ( 2 * n_edges );
+  const double twom_inv_sq = twom_inv * twom_inv;
+
+  // Traverse dendrograms.
+  for ( auto& vo: mgraph )
+    if ( vo.tree_node )
+      {
+        int w_total = 0;
+        for ( auto [_,w]: vo.dst_wht ) w_total += w;
+        q += ( vo.deg - w_total ) * twom_inv - vo.deg * vo.deg * twom_inv_sq;
+        const int c_idx = ++n_communities;
+        const auto c_start = perm_rbt.size();
+        vo.tree_node->leaves_apply(perm_rbt); // Append perm_rbt with leaves.
+        const auto c_end = perm_rbt.size();
+        for ( auto v_new: views::iota(c_start,c_end) )
+          vo_to_community[ perm_rbt[v_new] ] = c_idx;
+      }
+
+  // Optionally apply special placement for hub (inter-community) nodes.
+  //
+  vo_mp.reserve(n);
+  vector<int> v_old_hub; v_old_hub.reserve(n/2);
+  for ( auto v_new: views::iota(0ul,n) )
+    {
+      const auto v_old = perm_rbt[v_new];
+      const auto c_idx = vo_to_community[ v_old ];
+      int n_hub_edges_here = 0;
+      for ( auto d: dst_iter_make(v_old) )
+        if ( vo_to_community[d] != c_idx ) n_hub_edges_here++;
+      n_hub_edges += n_hub_edges_here;
+      if ( n_hub_edges_here ) n_hub_vertices++;
+      if ( opt_hub_group && n_hub_edges_here ) v_old_hub.push_back( v_old );
+      else                                     vo_mp.push_back( v_old );
+    }
+  if ( opt_hub_sort && opt_hub_group )
+    ranges::sort
+      ( v_old_hub, ranges::less(), [&](auto i){ return mgraph[i].deg_orig; });
+
+  for ( auto v: v_old_hub ) vo_mp.push_back( v );
+
+  printf("Shyness %.1f. Iter %d  GH %d GS %d "
+         "Rabbit found %d communities, %d hubs %.3f%%, edges %d. Mod %f\n",
+         opt_cluster_shyness, opt_iterative, opt_hub_group, opt_hub_sort,
+         n_communities, n_hub_vertices,
+         100.0 * n_hub_vertices / n, n_hub_edges,q);
+
+  perm_apply(dl);
+  cuda_alloc_cpy();
+}
+
 
 DataLoaderDeg::DataLoaderDeg(const DataLoader& dl):DataLoader(dl)
 {
