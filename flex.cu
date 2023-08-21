@@ -1539,6 +1539,360 @@ void flexspmm_cuda_w_pre_w_vec_v14(){
     
         timing_end();
 }
+
+template<int tm, int nnz_limit, int warps>
+__global__
+void flexspmm_cuda_wo_pre_w_vec_v15(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    __shared__ int smem[3*(nnz_limit)+3*tm];
+    //int dbl = 0;
+    int *rsm1 = reinterpret_cast<int*>(smem);
+    int *csm1 = reinterpret_cast<int*>(&smem[1*(nnz_limit+tm)]);
+    float *vsm1 = reinterpret_cast<float*>(&smem[2*(nnz_limit+tm)]);
+    
+    int seg_cur_id = 0, seg_nxt_id = 0, nnz_cur_seg = 0;
+    
+    for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
+                   
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
+        }
+        
+        seg_cur_id = md.segPtr_dev[ seg_idx ]; 
+        seg_nxt_id = md.segPtr_dev[ seg_idx+1 ]; 
+        nnz_cur_seg = seg_nxt_id - seg_cur_id;
+        
+        for ( int i=seg_cur_id+threadIdx.x; i<seg_nxt_id; i += blockDim.x ){
+            int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[i];
+            rsm1[ i-seg_cur_id ] = rc.x;
+            csm1[ i-seg_cur_id ] = rc.y;
+            vsm1[ i-seg_cur_id ] = md.vals_dev[ i ]; 
+        }
+        __syncthreads();
+
+        for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+	        float res[tm]{};
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   float val = vsm1[ z ];
+                   int ridx = rsm1[ z ];
+                   int cidx = csm1[ z ];
+                   res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;
+                   //float *shadow_b_addr = &md.shadow_b_dev[ cidx*md.k ];
+                   //float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ c_col ];
+                   //res[ridx][0] += val * b_vec.x;
+                   //res[ridx][1] += val * b_vec.y;
+                 }
+             };
+            do_n( nnz_cur_seg );
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                        //atomicAdd( &md.mat_c_dev[ addr + c_col*2 + 0 ], res[c][0]);
+                        //atomicAdd( &md.mat_c_dev[ addr + c_col*2 + 1 ], res[c][1]);
+                    }else{
+                        md.mat_c_dev[ addr + c_col ] = res[ c ];
+                        //float* mat_c = &md.mat_c_dev[ addr ];
+                        //float2 vect2_c = {res[c][0], res[c][1]}; 
+                        //reinterpret_cast<float2*>(mat_c)[ c_col ] = vect2_c; 
+                    }
+                }
+            }
+         
+        }// end C colums
+        __syncthreads();
+
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
+template<int tm>
+__device__
+void less_quarter_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cur_seg, int* gold_row_id){ 
+
+    // Case1: nnz falls in ( 0 , limit/4 ) e.g. nnz_limit==128, nnz of cur seg falss in (0, 32)
+    const Mat_POD& md = mat_dev;
+
+    timing_start(); 
+    
+    __shared__ int smem[3*32];
+    int *rsm1 = reinterpret_cast<int*>(smem);
+    int *csm1 = reinterpret_cast<int*>(&smem[32]);
+    float *vsm1 = reinterpret_cast<float*>(&smem[2*32]);
+    
+    int i = seg_cur_idx + threadIdx.x;
+    if ( i<seg_nxt_idx ){
+        int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[i];
+        rsm1[ i-seg_cur_idx ] = rc.x;
+        csm1[ i-seg_cur_idx ] = rc.y;
+        vsm1[ i-seg_cur_idx ] = md.vals_dev[ i ]; 
+    }
+    __syncthreads();
+
+    for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+        float res[tm]{};
+    
+        auto do_n = [&](int n)
+         {
+           for ( int z=0; z<n; z++ )
+             {
+               //int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_idx+z];
+               //float val = md.vals_dev[seg_cur_idx+z];
+               float val = vsm1[z];
+               int ridx = rsm1[z];
+               int cidx = csm1[z];
+               res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;
+             }
+         };
+        do_n( nnz_cur_seg );
+        
+        // store C tiles back to global mem
+        #pragma unroll
+        for ( int c=0; c<tm; ++c ){
+            int actual_row = gold_row_id[ c ] & 0x7fffffff;
+             
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                }else{
+                    md.mat_c_dev[ addr + c_col ] = res[ c ];
+                }
+            }
+        } 
+        
+    }// end C colums    
+    
+    __syncthreads();
+    timing_end();
+}
+
+template<int tm>
+__device__
+void less_half_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cur_seg, int* gold_row_id){ 
+
+    // Case2: nnz falls in [ limit/4 , limit/2 ) e.g. nnz_limit==128, nnz of cur seg falss in [32, 64)
+    const Mat_POD& md = mat_dev;
+    
+    timing_start(); 
+    
+    __shared__ int smem[3*64];
+    int *rsm1 = reinterpret_cast<int*>(smem);
+    int *csm1 = reinterpret_cast<int*>(&smem[64]);
+    float *vsm1 = reinterpret_cast<float*>(&smem[2*64]);
+    
+    int i = seg_cur_idx + threadIdx.x;
+    if ( i<seg_nxt_idx ){
+        int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[i];
+        rsm1[ i-seg_cur_idx ] = rc.x;
+        csm1[ i-seg_cur_idx ] = rc.y;
+        vsm1[ i-seg_cur_idx ] = md.vals_dev[ i ]; 
+    }
+    __syncthreads();
+    
+    for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+        float res[tm]{};
+        
+        auto do_n = [&](int n)
+         {
+           for ( int z=0; z<n; z++ )
+             {
+               //int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_idx+z];
+               //float val = md.vals_dev[seg_cur_idx+z];
+               float val = vsm1[z];
+               int ridx = rsm1[z];
+               int cidx = csm1[z];
+               res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;
+             }
+         };
+        do_n( nnz_cur_seg );
+        
+        // store C tiles back to global mem
+        #pragma unroll
+        for ( int c=0; c<tm; ++c ){
+            int actual_row = gold_row_id[ c ] & 0x7fffffff;
+             
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                }else{
+                    md.mat_c_dev[ addr + c_col ] = res[ c ];
+                }
+            }
+        } 
+        
+    }// end C colums    
+    __syncthreads(); 
+    timing_end();
+}
+template<int tm>
+__device__
+void less_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cur_seg, int* gold_row_id){ 
+
+    // Case3: nnz falls in [ limit/2 , limit ) e.g. nnz_limit==128, nnz of cur seg falss in [64, 128)
+    const Mat_POD& md = mat_dev;
+    
+    timing_start(); 
+    
+    __shared__ int smem[3*128];
+    int *rsm1 = reinterpret_cast<int*>(smem);
+    int *csm1 = reinterpret_cast<int*>(&smem[128]);
+    float *vsm1 = reinterpret_cast<float*>(&smem[2*128]);
+    
+    int i = seg_cur_idx + threadIdx.x;
+    if ( i<seg_nxt_idx ){
+        int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[i];
+        rsm1[ i-seg_cur_idx ] = rc.x;
+        csm1[ i-seg_cur_idx ] = rc.y;
+        vsm1[ i-seg_cur_idx ] = md.vals_dev[ i ]; 
+    }
+    __syncthreads();
+    for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+        float res[tm]{};
+        
+        auto do_n = [&](int n)
+         {
+           for ( int z=0; z<n; z++ )
+             {
+               //int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_idx+z];
+               //float val = md.vals_dev[seg_cur_idx+z];
+               float val = vsm1[z];
+               int ridx = rsm1[z];
+               int cidx = csm1[z];
+               res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;
+             }
+         };
+        do_n( nnz_cur_seg );
+        
+        // store C tiles back to global mem
+        #pragma unroll
+        for ( int c=0; c<tm; ++c ){
+            int actual_row = gold_row_id[ c ] & 0x7fffffff;
+             
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                }else{
+                    md.mat_c_dev[ addr + c_col ] = res[ c ];
+                }
+            }
+        } 
+        
+    }// end C colums    
+    __syncthreads();
+    timing_end();
+}
+
+template<int tm, int nnz_limit, int warps>
+__global__
+void flexspmm_cuda_wo_pre_w_vec_v16(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    
+    
+    for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
+                   
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
+        }
+        
+        int seg_cur_id = md.segPtr_dev[ seg_idx ]; 
+        int seg_nxt_id = md.segPtr_dev[ seg_idx+1 ]; 
+        int nnz_cur_seg = seg_nxt_id - seg_cur_id;
+        
+        if ( true && nnz_cur_seg<nnz_limit/4 ){
+            // Case1: nnz falls in ( 0 , limit/4 ) 
+            less_quarter_lim_ker<tm>(seg_idx, seg_cur_id, seg_nxt_id, nnz_cur_seg, gold_row_id);
+        }else if ( true && nnz_cur_seg<=nnz_limit/2 ){
+            // Case2: nnz falls in [ limit/4 , limit/2 ) 
+            less_half_lim_ker<tm>(seg_idx, seg_cur_id, seg_nxt_id, nnz_cur_seg, gold_row_id);
+        }else if ( true && nnz_cur_seg<=nnz_limit ){
+            // Case3: nnz falls in [ limit/2 , limit ) 
+            less_lim_ker<tm>(seg_idx, seg_cur_id, seg_nxt_id, nnz_cur_seg, gold_row_id);
+        }else{
+            // Case4: nnz falls in [ limit , limit+tm ) 
+            __shared__ int smem[3*(nnz_limit)+3*tm];
+            int *rsm1 = reinterpret_cast<int*>(smem);
+            int *csm1 = reinterpret_cast<int*>(&smem[1*(nnz_limit+tm)]);
+            float *vsm1 = reinterpret_cast<float*>(&smem[2*(nnz_limit+tm)]);
+            for ( int i=seg_cur_id+threadIdx.x; i<seg_nxt_id; i += blockDim.x ){
+                int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[i];
+                rsm1[ i-seg_cur_id ] = rc.x;
+                csm1[ i-seg_cur_id ] = rc.y;
+                vsm1[ i-seg_cur_id ] = md.vals_dev[ i ]; 
+            }
+            __syncthreads();
+
+            for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+                float res[tm]{};
+                
+                auto do_n = [&](int n)
+                 {
+                   for ( int z=0; z<n; z++ )
+                     {
+                       float val = vsm1[ z ];
+                       int ridx = rsm1[ z ];
+                       int cidx = csm1[ z ];
+                       res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;
+                     }
+                 };
+                do_n( nnz_cur_seg );
+                
+                // store C tiles back to global mem
+                #pragma unroll
+                for ( int c=0; c<tm; ++c ){
+                    int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                     
+                    if ( actual_row<md.m ){
+                        int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                        int addr = actual_row*md.k;
+                        if ( atomicORnot>>31 ){
+                            atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                        }else{
+                            md.mat_c_dev[ addr + c_col ] = res[ c ];
+                        }
+                    }
+                }
+             
+            }// end C colums
+        }
+        //__syncthreads();
+    } // end tile-segs loops
+    
+        timing_end();
+}
 GPU_Info
 print_gpu_and_kernel_info()
 {
@@ -1736,7 +2090,8 @@ void run(DataLoader& input_vo){
 // v4-v6 need to deactivate macro "COL_MAJ_TILE" in DataLoader.cuh.   
 // v9 need to deactivate macro "VO_RECOVER" in DataLoader.cuh.   
 //#define flex_kernel flexspmm_cuda_w_pre_v12
-#define flex_kernel flexspmm_cuda_w_pre_w_vec_v14
+//#define flex_kernel flexspmm_cuda_w_pre_w_vec_v14
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v16
 
     // Vector size of instructions that load B matrix elements.
     map<string,int> k_prop_vec_b
