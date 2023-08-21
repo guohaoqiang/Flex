@@ -227,9 +227,18 @@ Mat::stats_collect2(FILE *stream)
   const uint n_segs = segPtr.size()-1;
 
   n_col_sum = 0;
+  int sp_seg1 = 0;
+  int sp_seg2 = 0;
+  int sp_seg3 = 0;
+  int sp_seg4 = 0;
   for ( uint seg_idx = 0; seg_idx < n_segs; seg_idx++ )
     {
       const uint nnz_seg = segPtr[seg_idx+1] - segPtr[seg_idx];
+      if ( nnz_seg<=NNZ_LIMIT/4 ) sp_seg1++;
+      else if ( nnz_seg<=NNZ_LIMIT/2 ) sp_seg2++;
+      else if ( nnz_seg<=NNZ_LIMIT ) sp_seg3++;
+      else if ( nnz_seg>NNZ_LIMIT ) sp_seg4++;
+      
       const uint lg_nnz = bit_width(nnz_seg);
       set_max( seg_lg_nnz_max, lg_nnz );
       set_min( seg_lg_nnz_min, lg_nnz );
@@ -265,9 +274,14 @@ Mat::stats_collect2(FILE *stream)
           "              n_segs=%u, nnz=%d  Avg deg=%.1f\n",
          m, n, k, tm, n_segs, nnz, double(nnz)/m);
 
-  fprintf(stream,"nnz / seg: %.3f  Load / B elt  %.3f\n",
+  fprintf(stream,"nnz / seg: %.3f     Load / B elt  %.3f\n",
          double(nnz) / n_segs,
          n_col_sum / double(nnz) );
+  fprintf(stream,"nnz in segs:  (0,%d]: %d  %.3f     (%d,%d]: %d  %.3f     (%d,%d]: %d  %.3f      (%d,%d]: %d  %.3f\n",
+         NNZ_LIMIT/4, sp_seg1, double(sp_seg1) / n_segs,
+         NNZ_LIMIT/4, NNZ_LIMIT/2, sp_seg2, double(sp_seg2) / n_segs,
+         NNZ_LIMIT/2, NNZ_LIMIT, sp_seg3, double(sp_seg3) / n_segs,
+         NNZ_LIMIT, NNZ_LIMIT+tm, sp_seg4, double(sp_seg4) / n_segs );
   fprintf(stream,"\n");
 }
 

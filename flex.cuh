@@ -11,6 +11,7 @@
 
 
 #define CUBE4X4
+
 #define RECT8X4
 #define RECT16X4
 

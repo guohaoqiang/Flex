@@ -137,8 +137,8 @@ DataLoader::cuda_alloc_cpy()
                 //unsigned int temp_v = (rand()<<16)|rand();
                 //temp_v = (temp_v&0x7fffff) | 0x40000000; 
                 //cpuX.push_back( *((float*)&temp_v) - 3.0f );
-                cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
-                //cpuX.push_back(i);
+                //cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
+                cpuX.push_back(i);
                 //cpuX.push_back(i*dim+j);
             }
         }
