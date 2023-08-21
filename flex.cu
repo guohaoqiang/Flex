@@ -1633,8 +1633,6 @@ void less_quarter_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz
     // Case1: nnz falls in ( 0 , limit/4 ) e.g. nnz_limit==128, nnz of cur seg falss in (0, 32)
     const Mat_POD& md = mat_dev;
 
-    timing_start(); 
-    
     __shared__ int smem[3*32];
     int *rsm1 = reinterpret_cast<int*>(smem);
     int *csm1 = reinterpret_cast<int*>(&smem[32]);
@@ -1685,7 +1683,6 @@ void less_quarter_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz
     }// end C colums    
     
     __syncthreads();
-    timing_end();
 }
 
 template<int tm>
@@ -1695,7 +1692,6 @@ void less_half_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cu
     // Case2: nnz falls in [ limit/4 , limit/2 ) e.g. nnz_limit==128, nnz of cur seg falss in [32, 64)
     const Mat_POD& md = mat_dev;
     
-    timing_start(); 
     
     __shared__ int smem[3*64];
     int *rsm1 = reinterpret_cast<int*>(smem);
@@ -1746,7 +1742,6 @@ void less_half_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cu
         
     }// end C colums    
     __syncthreads(); 
-    timing_end();
 }
 template<int tm>
 __device__
@@ -1755,7 +1750,6 @@ void less_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cur_seg
     // Case3: nnz falls in [ limit/2 , limit ) e.g. nnz_limit==128, nnz of cur seg falss in [64, 128)
     const Mat_POD& md = mat_dev;
     
-    timing_start(); 
     
     __shared__ int smem[3*128];
     int *rsm1 = reinterpret_cast<int*>(smem);
@@ -1805,7 +1799,6 @@ void less_lim_ker(int seg_idx, int seg_cur_idx, int seg_nxt_idx, int nnz_cur_seg
         
     }// end C colums    
     __syncthreads();
-    timing_end();
 }
 
 template<int tm, int nnz_limit, int warps>
@@ -2234,8 +2227,9 @@ void run(DataLoader& input_vo){
       if ( App_Kernel_Info& aki = kernels[i]; !kernels_seen[aki.name_tmpl]++ )
         {
           Kernel_Info& ki = info.get_info(aki.k_ptr);
-          printf("Kernel %s:  %d regs,  %zd local\n",
-                 aki.name_tmpl,ki.cfa.numRegs, ki.cfa.localSizeBytes);
+          printf("Kernel %s:  %d regs,  %zd local,  %zd B shared.\n",
+                 aki.name_tmpl,ki.cfa.numRegs,
+                 ki.cfa.localSizeBytes, ki.cfa.sharedSizeBytes );
         }
 
     const char* stats_file_name = "flex-tile-stats.log";
