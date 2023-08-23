@@ -10,7 +10,7 @@
 
 using namespace std;
 
-vector<ul> complete_gorder(Edgelist &h, ul window) {
+vector<unsigned int> complete_gorder(Edgelist &h, ul window) {
   Info("Applying RCM order");
   vector<ul> rank_rcm = order_rcm(h);
   // c_printorder(rank_rcm, h.n, "ord_1.txt");
@@ -23,7 +23,7 @@ vector<ul> complete_gorder(Edgelist &h, ul window) {
   // c_printorder(rank_gorder, h.n, "ord_2.txt");
 
   Debug("composing Gorder with RCM")
-  vector<ul> rank(g.n); // rank.reserve(g.n);
+  vector<unsigned int> rank(g.n); // rank.reserve(g.n);
   for (ul u = 0; u < g.n; u++) {
     rank[u] = rank_gorder[rank_rcm[u]];
   }

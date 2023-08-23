@@ -137,8 +137,8 @@ DataLoader::cuda_alloc_cpy()
                 //unsigned int temp_v = (rand()<<16)|rand();
                 //temp_v = (temp_v&0x7fffff) | 0x40000000; 
                 //cpuX.push_back( *((float*)&temp_v) - 3.0f );
-                //cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
-                cpuX.push_back(i);
+                cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
+                //cpuX.push_back(i);
                 //cpuX.push_back(i*dim+j);
             }
         }
@@ -184,7 +184,7 @@ DataLoader::perm_apply(const DataLoader& dl)
 
   rowPtr.reserve( n+1 );
   rowPtr.push_back( 0 );
-  vector<int> vold_to_new(n,n);
+  vector<unsigned int> vold_to_new(n,n);
 
   for ( auto v_new: views::iota(0ul,n) )
     {
@@ -220,6 +220,9 @@ DataLoader::perm_apply(const DataLoader& dl)
         }
     }
 
+    if ( false ){
+        print_ord(this->vertex_order_abbr, vold_to_new, this->rowPtr, col);
+    }
   //
   // Perform a rough test of whether the two graphs match.
   //
@@ -335,7 +338,9 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
           vals[ e_idx_dfs_i++ ] = val;
         }
     }
-
+    if ( false ){
+        print_ord(vertex_order_abbr, vo_to_dfs, rowPtr, col);
+    }
   //
   // Perform a rough test of whether the two graphs match.
   //
@@ -706,7 +711,7 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
 
   assert( dl.rowPtr.size() == n + 1 );
 
-  vector<ul> vo_to_gorder;  // original Vertex Order to Gorder order
+  vector<unsigned int> vo_to_gorder;  // original Vertex Order to Gorder order
 
   col.resize( dl.col.size() );
   vals.resize( dl.col.size() );
@@ -755,6 +760,9 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
         }
     }
 
+    if ( false ){
+        print_ord(vertex_order_abbr, vo_to_gorder, rowPtr, col);
+    }
   //
   // Perform a rough test of whether the two graphs match.
   //
