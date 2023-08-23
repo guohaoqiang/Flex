@@ -12,7 +12,7 @@ struct Edgelist;
 struct Badjlist;
 struct UnitHeap;
 
-std::vector<ul> complete_gorder(Edgelist &h, ul window = 5);
+std::vector<unsigned int> complete_gorder(Edgelist &h, ul window = 5);
 std::vector<ul> order_gorder(const Badjlist &g, ul window = 5);
 void move_window(const Badjlist &g, UnitHeap &heap,
                  const ul &new_node, const ul &old_node);

@@ -115,7 +115,45 @@ void Mat::dataVolume_est(){
                     voMp_bytes;
     est_st_bytes = dl.gpuC_bytes;
 }
+void Mat::permute_segs(){
+	std::vector<unsigned int> segPtr1(1,0);
+	std::vector<unsigned int> segNzRCIdx1;
+	std::vector<float> newVals1;
+	std::vector<unsigned int> segVoMap1;
 
+	std::pair last{-1,-1};
+
+	while (!aux_seg.empty()){
+		auto top = aux_seg.front();
+		aux_seg.pop();
+		
+		if ( count_segs[top.first] != aux_seg.size()+1 && last.first!=-1 && top.first == last.first ){
+			
+			aux_seg.push(top);
+            //printf(" line: %d, seg_idx = %d, seg_row = %d\n",__LINE__,top.second,top.first);
+		}else{
+            count_segs[top.first]--;
+			int seg_idx = top.second;
+            int seg_nnz = segPtr[seg_idx+1] - segPtr[seg_idx];
+			for (int i=segPtr[seg_idx]; i<segPtr[seg_idx+1]; ++i){
+				segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+				segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+				newVals1.push_back(newVals[i]);
+			}
+			segPtr1.push_back(segPtr1.back()+seg_nnz);
+			for (int i=0; i<tm; ++i){
+				segVoMap1.push_back(segVoMap[seg_idx*tm+i]);
+			}
+
+			last = top;
+		}
+	}
+	swap(segPtr, segPtr1);
+	swap(segNzRCIdx, segNzRCIdx1);
+	swap(newVals, newVals1);
+	swap(segVoMap, segVoMap1);
+	return ;
+}
 void Mat::csr2tile(){
 	
 	int tileRows = (m+tm-1)/tm;
@@ -126,20 +164,29 @@ void Mat::csr2tile(){
         csr2seg_Cmajor(i);
 	} 
     n_segs = segPtr.size()-1;
+    
+    bool seg_sort = true;
+    if (seg_sort) permute_segs();
 }
 void Mat::print3(int l){
-    if ( false ){
+    if ( true ){
         printf("\nSegPtr: \n");
-        for (int i=0; i<l?l:segPtr.size(); ++i){
+        for (int i=0; i<(l?l:segPtr.size()); ++i){
             printf("(%d:%d)  ",i,segPtr[i]);
         }
-        printf("\nSegRowNzIdx: %d\n",(int)segNzRowIdx.size());
-        for (int i=0; i<l?l:segNzRowIdx.size(); ++i){
-            printf("%d  ",segNzRowIdx[i]);
+        printf("\nSegNzRC: \n");
+        for (int i=0; i<(l?l:segNzRCIdx.size()/2); ++i){
+            printf("(%d:%d)  ",segNzRCIdx[2*i],segNzRCIdx[2*i+1]);
         }
-        printf("\nSegColNzIdx: %d\n",(int)segNzColIdx.size());
-        for (int i=0; i<l?l:segNzColIdx.size(); ++i){
-            printf("%d  ",segNzColIdx[i]);
+        if (false){
+            printf("\nSegRowNzIdx: %d\n",(int)segNzRowIdx.size());
+            for (int i=0; i<(l?l:segNzRowIdx.size()); ++i){
+                printf("%d  ",segNzRowIdx[i]);
+            }
+            printf("\nSegColNzIdx: %d\n",(int)segNzColIdx.size());
+            for (int i=0; i<(l?l:segNzColIdx.size()); ++i){
+                printf("%d  ",segNzColIdx[i]);
+            }
         }
     }
     printf("\nSegVoMap: %d\n",(int)segVoMap.size());
@@ -178,6 +225,7 @@ void Mat::csr2seg_Cmajor(int ridx){
                 segNzRowIdx.push_back(i-rowStart);
                 segNzColIdx.push_back(j);
                 segNzRCIdx.push_back(i-rowStart);
+                //segNzRCIdx.push_back(i);
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
                 cOffset[i-rowStart]++;
@@ -187,6 +235,8 @@ void Mat::csr2seg_Cmajor(int ridx){
         }
         if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
          
+            aux_seg.push({ ridx, segPtr.size()-1 }); // {seg_row, seg_idx}
+            count_segs[ridx]++;
             segPtr.push_back(segPtr.back()+nnzInSeg);
             nnzInSeg = 0;
             

@@ -11,12 +11,11 @@
 
 
 #define CUBE4X4
-
 #define RECT8X4
 #define RECT16X4
-
-#define RECT32X4
 /*
+#define RECT32X4
+
 #define RECT64X4
 #define RECT128X4
 #define RECT256X4

@@ -1,9 +1,11 @@
 #ifndef MAT_H
 #define MAT_H 
 #include <vector>
+#include <queue>
 #include <iostream>
 #include <algorithm>
 #include <unordered_set>
+#include <unordered_map>
 #include <stdio.h>
 #include "common.h"
 #include "DataLoader.cuh"
@@ -53,6 +55,7 @@ class Mat : public Mat_POD{
     void stats_collect2(FILE *stream = nullptr);
     
 	void csr2tile();
+    void permute_segs();
 
 	std::vector<unsigned int> tileNnz;
 	std::vector<unsigned int> tileColIdx;
@@ -68,6 +71,8 @@ class Mat : public Mat_POD{
 	std::vector<unsigned int> segNzRowIdx; 
 	std::vector<unsigned int> segNzColIdx; 
 	std::vector<unsigned int> segNzRCIdx; 
+    std::queue<pair<int,int>> aux_seg;
+    std::unordered_map<int,int> count_segs;
     int nnz_limit;
 	int segPtr_bytes = 0; 
 	int segVoMap_bytes = 0; 

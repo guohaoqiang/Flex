@@ -61,6 +61,23 @@ public:
     size_t m, n, dim, c, nnz;
     std::string graph_name;
 
+    void print_ord(std::string& vertex_order_abbr, std::vector<unsigned int>& vo_to_dfs, 
+            std::vector<unsigned int>& rowPtr, std::vector<unsigned int>& col){
+        std::cout<<vertex_order_abbr<<":"<<std::endl;
+        std::cout<<"    vo:"<<std::endl;
+        for (int v:vo_to_dfs){
+            std::cout<<v<<",";
+        }
+        std::cout<<std::endl<<"    rowPtr:"<<std::endl;
+        for (int r:rowPtr){
+            std::cout<<r<<",";
+        }
+        std::cout<<std::endl<<"    col:"<<std::endl;
+        for (int c:col){
+            std::cout<<c<<",";
+        }
+        std::cout<<std::endl;
+    }
     void freeA(){
         cuda_freez(rowPtr_dev);
         cuda_freez(col_dev);
