@@ -2185,6 +2185,147 @@ void flexspmm_cuda_w_pre_w_vec_v19(){
 }
 
 
+template<int tm, int nnz_limit, int warps>
+__global__
+void flexspmm_cuda_wo_pre_w_vec_v20(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    
+    int seg_cur_id = 0, seg_nxt_id = 0, nnz_cur_seg = 0;
+    
+    for ( int seg_idx=blockIdx.x; seg_idx<md.n_segs; seg_idx += gridDim.x ){ // over  tile segments
+                   
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
+        }
+        
+        seg_cur_id = md.segPtr_dev[ seg_idx ]; 
+        seg_nxt_id = md.segPtr_dev[ seg_idx+1 ]; 
+        nnz_cur_seg = seg_nxt_id - seg_cur_id;
+        
+        for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+	        float res[tm]{};
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
+                   float val = md.vals_dev[ seg_cur_id+z ];
+                   int ridx = rc.x;
+                   int cidx = rc.y;
+                   res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;
+                 }
+             };
+            do_n( nnz_cur_seg );
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                    }else{
+                        md.mat_c_dev[ addr + c_col ] = res[ c ];
+                    }
+                }
+            }
+         
+        }// end C colums
+
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
+template<int tm, int nnz_limit, int warps>
+__global__
+void flexspmm_cuda_wo_pre_w_vec_v21(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();    
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    
+    __shared__ int seg_idx;
+    if (threadIdx.x==0){
+        seg_idx = atomicAdd(&md.next_seg_dev[sm_id],1);
+    }
+    __syncthreads();
+    int tail_seg_idx = md.grouped_tailSeg_dev[sm_id];     
+    while ( (( (seg_idx>=0) && (seg_idx < tail_seg_idx) )  ||  
+            (seg_idx >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx < md.n_segs)  ){ // over tile segments in a bucket
+                   
+        int seg_cur_id = md.segPtr_dev[ seg_idx ]; 
+        int nnz_cur_seg = md.segPtr_dev[ seg_idx+1 ] - seg_cur_id;
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
+        }
+        
+        for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+	        float res[tm]{};
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
+                   float val = md.vals_dev[ seg_cur_id+z ];
+                   int ridx = rc.x;
+                   int cidx = rc.y;
+                   res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;  
+                 }
+             };
+            do_n( nnz_cur_seg );
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                    }else{
+                        md.mat_c_dev[ addr + c_col ] = res[ c ];
+                    }
+                }
+            }
+         
+        }// end C colums
+        
+        if (threadIdx.x==0){ 
+            seg_idx = atomicAdd(&md.next_seg_dev[sm_id],1);
+            
+            // if segs in its own bucket run out  
+            // steal segs from the last bucket
+            if (seg_idx>=tail_seg_idx){
+                seg_idx = atomicAdd(&md.next_seg_dev[md.sms],1);
+            }
+        }
+        __syncthreads();
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
 GPU_Info
 print_gpu_and_kernel_info()
 {
@@ -2381,10 +2522,30 @@ void run(DataLoader& input_vo){
 // v7-v8 need to activate macro "COL_MAJ_TILE" in DataLoader.cuh. 
 // v4-v6 need to deactivate macro "COL_MAJ_TILE" in DataLoader.cuh.   
 // v9 need to deactivate macro "VO_RECOVER" in DataLoader.cuh.   
+
+// v10: w/o buffering, rows-based seg allocation, w/o vec, broadcast within a warp 
+//#define flex_kernel flexspmm_cuda_wo_pre_v10
+
+// v11: w/o buffering, rows-based seg allocation, vec4 dense input, broadcast within a warp 
+//#define flex_kernel flexspmm_cuda_w_vec4_v11
+
+// v12: double buffering, rows-based seg allocation, w/o vec 
 //#define flex_kernel flexspmm_cuda_w_pre_v12
-//#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
-#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v18
+
+// v15: single buffering, rows-based seg allocation, vec r and c of sparse input  
+// v16: single buffering, varying kernels with seg size, vec r and c of sparse input 
+// v17: single buffering, a block process contiguous layout segs, vec r and c of sparse input 
 //#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v17
+
+// v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
+// v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
+// v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+
+// v13: double buffering, rows-based seg allocation, vec2 dense input 
+// v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
+// v19: double buffering, a block process contiguous layout segs, vec r and c of sparse input 
+//#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
     // Vector size of instructions that load B matrix elements.
     map<string,int> k_prop_vec_b
@@ -2546,6 +2707,8 @@ void run(DataLoader& input_vo){
         spMats[id].csr2tile();
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
         mat.stats_collect2(tile_stats);
+        //continue;
+
         fprintf(tile_stats,"\n");
         if ( table.num_lines == 0 ){
            printf("cuSpmm setup/µs: %.2f , prosessing/µs: %.2f, total/µs: %.2f\n",
@@ -2558,17 +2721,8 @@ void run(DataLoader& input_vo){
         if (input.vertex_order_abbr != "OVO"){
             const int blocks = num_sm * 8;
             flexspmm_v9_permuteX<<<blocks, 128>>>();        
-            if ( false ){
-              vector<float> test_b( mat.n * mat.k );
-              CE ( cudaMemcpy(test_b.data(), mat.shadow_b_dev,
-                              mat.mat_b_bytes, cudaMemcpyDeviceToHost) );
-              for ( int l=0; l<mat.n; ++l )
-                printf("b[%d] = %f, ", l,test_b[l*mat.k+0]);
-              printf("\n");
-            }
         }
-
-
+    
         // Compute the expected number of multiply/add instructions.
         //
         const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
@@ -2579,7 +2733,9 @@ void run(DataLoader& input_vo){
 
         if ( opt_vary_grid_size )
           for ( int n_blks = num_sm; n_blks < mat.n_segs; n_blks <<= 1 )
-            grid_sizes.push_back( n_blks );
+          {
+              grid_sizes.push_back( n_blks );
+          }
         grid_sizes.push_back( mat.n_segs );
 
         // Allocate storage for timing data.
@@ -2602,7 +2758,6 @@ void run(DataLoader& input_vo){
             const int num_blocks = grid_sz.x * grid_sz.y * grid_sz.z;
             const int grid_n_wps = num_blocks * block_n_wps;
 
-            //continue;
 
             pTable_Row row(table);
             Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
@@ -2617,6 +2772,8 @@ void run(DataLoader& input_vo){
 
             /// Launch Kernel -- Without Performance Counter Sampling
             //
+            CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
+            CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
             KPtr(ki->func_ptr)<<<grid_sz,threads>>>();
             //
             // Until NPerf_metrics_off is fixed event timing won't work.
@@ -2635,10 +2792,12 @@ void run(DataLoader& input_vo){
             
             /// Launch Kernels -- With Performance Counter Sampling
             //
-            CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
+            CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
+            CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) ); 
             for ( NPerf_data_reset(); NPerf_need_run_get(); ){
                 KPtr(ki->func_ptr)<<<grid_sz,threads>>>();
             }
+            
 
             // Compute per-sm minimum-start and maximum-finish (end) times.
             //
