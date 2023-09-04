@@ -71,7 +71,8 @@ void Mat::transfer2(){
      CHECK_CUDA(cudaMalloc( &var##_dev, var##_bytes )) ;
 
      CMALC( segPtr ); CMALC( segNzRCIdx ); CMALC( segNzRowIdx ); CMALC( segNzColIdx ); 
-     CMALC( vals ); CMALC( voMp ); CMALC( segVoMap );
+     CMALC( vals ); CMALC( voMp ); CMALC( segVoMap ); 
+     CMALC( grouped_tailSeg ); CMALC( next_seg );
 #   undef CMALC
 
     // transfer data to device
@@ -87,6 +88,7 @@ void Mat::transfer2(){
         CHECK_CUDA(cudaMalloc( &shadow_b_dev,  m*k*sizeof(float))) ;
         CHECK_CUDA(cudaMemset( shadow_b_dev,  0, m*k*sizeof(float))) ;
     }
+    cudaMemcpy(grouped_tailSeg_dev, grouped_tailSeg.data(), grouped_tailSeg.size()*sizeof(int), cudaMemcpyHostToDevice);
 }
 void Mat::dataVolume_est2(){
     est_fp = int64_t(nnz)*k;
@@ -121,6 +123,7 @@ void Mat::permute_segs(){
 	std::vector<float> newVals1;
 	std::vector<unsigned int> segVoMap1;
 
+    // {seg row_idx,seg_idx}
 	std::pair last{-1,-1};
 
 	while (!aux_seg.empty()){
@@ -128,9 +131,7 @@ void Mat::permute_segs(){
 		aux_seg.pop();
 		
 		if ( count_segs[top.first] != aux_seg.size()+1 && last.first!=-1 && top.first == last.first ){
-			
 			aux_seg.push(top);
-            //printf(" line: %d, seg_idx = %d, seg_row = %d\n",__LINE__,top.second,top.first);
 		}else{
             count_segs[top.first]--;
 			int seg_idx = top.second;
@@ -154,6 +155,99 @@ void Mat::permute_segs(){
 	swap(segVoMap, segVoMap1);
 	return ;
 }
+int Mat::checkSim(vector<int>& a, vector<int>& b){
+    // check the number of colnum overlap (non-zeros)
+    // to improve (temporal) locality of dense input in L1 
+    int sim = 0;
+    int i = 0;
+    int j = 0;
+    while ( i<a.size() && j<b.size() ){
+        if ( a[i]<b[j] ){
+            i++;
+        }else if ( a[i]>b[j] ){
+            j++;
+        }else{
+            sim++;i++;j++;
+        }
+    }
+    return sim;
+}
+void Mat::sortSegs(){
+
+    int insular = 0;
+    // construct graph
+    // { idx, col overlaps } min heap, sort by col overlaps
+    // enable the max col overlap be on the top of the stack when DFS
+    map< int, priority_queue<pair<int,int>, vector<pair<int,int>>, cmp> > g;
+    for (int i=0; i<n_segs; ++i){
+       for (int j=i+1; j<n_segs; ++j ){
+           // skip segs belonging to the same panel
+           if (id2r[i]==id2r[j]) continue;
+           
+           int sim = checkSim(cols_seg[i],cols_seg[j]);
+           if ( sim ){ 
+               g[i].push({j, sim});
+               g[j].push({i, sim});
+           }
+       }
+       if ( !g.count(i) ) {
+           insular++;
+           g[i].push( {i,0} );
+       }
+    }
+
+    if ( insular>0 ){
+        printf("insular segs = %d\n",insular);
+        assert( insular==0 );
+    }
+	std::vector<unsigned int> segPtr1(1,0);
+	std::vector<unsigned int> segNzRCIdx1;
+	std::vector<float> newVals1;
+	std::vector<unsigned int> segVoMap1;
+
+    // DFS reorder segs
+    // explore L1 reuse
+    vector<bool> visited(n_segs,false);
+    stack<int> st;
+    st.push(0);
+    while ( !st.empty() ){
+        
+        int node = st.top();
+        st.pop();
+        if (visited[node])  continue;
+        visited[node] = true;
+
+        int seg_nnz = segPtr[node+1] - segPtr[node];
+        for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
+            segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+            
+            newVals1.push_back(newVals[i]);
+        }        
+        segPtr1.push_back(segPtr1.back()+seg_nnz);
+        for (int i=0; i<tm; ++i){
+            segVoMap1.push_back(segVoMap[node*tm+i]);
+        }
+        while ( !g[node].empty() ){
+
+            auto nb = g[node].top();
+            g[node].pop();
+            if ( !visited[nb.first] ){
+                st.push(nb.first);
+            }
+        }            
+    }
+
+	assert( segPtr.size()==segPtr1.size() );
+	assert( segNzRCIdx.size()==segNzRCIdx1.size() );
+	assert( newVals.size()==newVals1.size() );
+	assert( segVoMap.size()==segVoMap1.size() );
+      
+	swap(segPtr, segPtr1);
+	swap(segNzRCIdx, segNzRCIdx1);
+	swap(newVals, newVals1);
+	swap(segVoMap, segVoMap1);
+}
 void Mat::csr2tile(){
 	
 	int tileRows = (m+tm-1)/tm;
@@ -166,7 +260,50 @@ void Mat::csr2tile(){
     n_segs = segPtr.size()-1;
     
     bool seg_sort = true;
-    if (seg_sort) permute_segs();
+    if (seg_sort) {
+        //permute_segs();
+        sortSegs();
+    
+
+        int device_id;
+        cudaDeviceProp prop;
+        cudaGetDevice( &device_id );
+        cudaGetDeviceProperties( &prop, device_id );
+        int n_sm = prop.multiProcessorCount;
+        sms = n_sm; 
+        
+        // distribute segs into n_sm+1 buckets, contiguous segs are in a bucket
+        // according to #non zeros ( wkload per sm )
+        // to balance workload, the last bucket is to offer segs when faster SMs are free   
+        int nnz = newVals.size(); 
+        int wkload = nnz / n_sm; 
+        int seg_head_sm = 0;
+        int seg_tail_sm;
+        int validate_nnz = 0;
+        // assign segs to each sm bucket
+        for (int i=0; i<n_sm; ++i){
+            next_seg.push_back( seg_head_sm );
+            int nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
+            
+            seg_tail_sm = seg_head_sm + 1;
+            while ( seg_tail_sm < n_segs && nz<(int)(0.98*wkload) ){
+                nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
+                seg_tail_sm++;
+            }
+            validate_nnz += nz;
+            grouped_tailSeg.push_back( seg_tail_sm );
+            seg_head_sm = seg_tail_sm;
+        }
+        
+        // the last bucket is used for workload balance among SMs 
+        // if seg_head_sm==n_segs, then n_segs==seg_head_sm
+        next_seg.push_back( seg_head_sm );
+        grouped_tailSeg.push_back( n_segs );
+        validate_nnz += segPtr[n_segs]-segPtr[seg_head_sm];
+        assert( validate_nnz==segPtr.back() );
+        assert( grouped_tailSeg.size()==n_sm+1 );
+        assert( next_seg.size()==n_sm+1 );
+    }
 }
 void Mat::print3(int l){
     if ( true ){
@@ -217,25 +354,32 @@ void Mat::csr2seg_Cmajor(int ridx){
     // collect segs in the panel
     for ( auto [j,ncol]: occ_cols ) {
         
+        int segId = segPtr.size()-1;
         for ( int i=rowStart; i<rowEnd; ++i ){
             // absolute position of the nze in csr, idx = base + offset
             int c = rowPtr[i] + cOffset[i-rowStart];
             if ( colIdx[c]==j && c<rowPtr[i+1] ){
                 // nze values
-                segNzRowIdx.push_back(i-rowStart);
+                //segNzRowIdx.push_back(i-rowStart);
+                segNzRowIdx.push_back(i);
                 segNzColIdx.push_back(j);
                 segNzRCIdx.push_back(i-rowStart);
-                //segNzRCIdx.push_back(i);
+                
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
                 cOffset[i-rowStart]++;
                 atom[i-rowStart]++;
                 nnzInSeg++;
+
+                if ( !cols_seg.count(segId) || cols_seg[segId].back()!=j ){
+                    cols_seg[segId].push_back(j);
+                }
             }
         }
         if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
          
             aux_seg.push({ ridx, segPtr.size()-1 }); // {seg_row, seg_idx}
+            id2r[segPtr.size()-1] = ridx;
             count_segs[ridx]++;
             segPtr.push_back(segPtr.back()+nnzInSeg);
             nnzInSeg = 0;

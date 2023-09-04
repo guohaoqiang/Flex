@@ -2,6 +2,7 @@
 #define MAT_H 
 #include <vector>
 #include <queue>
+#include <stack>
 #include <iostream>
 #include <algorithm>
 #include <unordered_set>
@@ -18,6 +19,7 @@ class Mat_POD{
 	int nnz;
 	int tm,tn;
     int n_segs;
+    int sms;
 	
     int* tileNnz_dev;
     int* tileColIdx_dev;
@@ -37,6 +39,8 @@ class Mat_POD{
 	int* segNzRCIdx_dev; 
 	int* segNzRowIdx_dev; 
 	int* segNzColIdx_dev; 
+	int* grouped_tailSeg_dev; 
+	int* next_seg_dev; 
 };
 extern __constant__ Mat_POD mat_dev;
 class Mat : public Mat_POD{
@@ -56,6 +60,8 @@ class Mat : public Mat_POD{
     
 	void csr2tile();
     void permute_segs();
+    int checkSim(vector<int>&, vector<int>&);
+    void sortSegs();
 
 	std::vector<unsigned int> tileNnz;
 	std::vector<unsigned int> tileColIdx;
@@ -71,14 +77,23 @@ class Mat : public Mat_POD{
 	std::vector<unsigned int> segNzRowIdx; 
 	std::vector<unsigned int> segNzColIdx; 
 	std::vector<unsigned int> segNzRCIdx; 
+    std::vector<int> grouped_tailSeg;
+    std::vector<int> next_seg;
+    std::unordered_map<int,int> id2r;
+
     std::queue<pair<int,int>> aux_seg;
     std::unordered_map<int,int> count_segs;
+    std::unordered_map<int,vector<int>> cols_seg;  // {seg_idx, colidx sequences}
+    
+
     int nnz_limit;
 	int segPtr_bytes = 0; 
 	int segVoMap_bytes = 0; 
 	int segNzRowIdx_bytes = 0; 
 	int segNzColIdx_bytes = 0; 
 	int segNzRCIdx_bytes = 0; // == RowIdx + ColIdx
+    int grouped_tailSeg_bytes;
+    int next_seg_bytes;
     int64_t atomic_op;
     
     int64_t est_fp = 0;
@@ -121,6 +136,8 @@ class Mat : public Mat_POD{
       cuda_freez(segPtr_dev);
       cuda_freez(segVoMap_dev);
       cuda_freez(voMp_dev);
+      cuda_freez(grouped_tailSeg_dev);
+      cuda_freez(next_seg_dev);
     }
     void freeMatGPU(){
       cuda_freez(tileNnz_dev);
@@ -137,5 +154,11 @@ class Mat : public Mat_POD{
 #endif
     }
     
+};
+class cmp{
+    public:
+    bool operator()(const pair<int,int>& a, const pair<int,int>& b){
+        return a.second>b.second;
+    }
 };
 #endif /* MAT_H */
