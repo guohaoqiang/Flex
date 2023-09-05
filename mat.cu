@@ -202,6 +202,8 @@ void Mat::sortSegs(){
     }
 	std::vector<unsigned int> segPtr1(1,0);
 	std::vector<unsigned int> segNzRCIdx1;
+	std::vector<unsigned int> segNzRowIdx1;
+	std::vector<unsigned int> segNzColIdx1;
 	std::vector<float> newVals1;
 	std::vector<unsigned int> segVoMap1;
 
@@ -220,7 +222,9 @@ void Mat::sortSegs(){
         int seg_nnz = segPtr[node+1] - segPtr[node];
         for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
             segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRowIdx1.push_back(segNzRCIdx[2*i]);
             segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+            segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
             
             newVals1.push_back(newVals[i]);
         }        
@@ -240,11 +244,15 @@ void Mat::sortSegs(){
 
 	assert( segPtr.size()==segPtr1.size() );
 	assert( segNzRCIdx.size()==segNzRCIdx1.size() );
+	assert( segNzRowIdx.size()==segNzRowIdx1.size() );
+	assert( segNzColIdx.size()==segNzColIdx1.size() );
 	assert( newVals.size()==newVals1.size() );
 	assert( segVoMap.size()==segVoMap1.size() );
       
 	swap(segPtr, segPtr1);
 	swap(segNzRCIdx, segNzRCIdx1);
+	swap(segNzRowIdx, segNzRowIdx1);
+	swap(segNzColIdx, segNzColIdx1);
 	swap(newVals, newVals1);
 	swap(segVoMap, segVoMap1);
 }
