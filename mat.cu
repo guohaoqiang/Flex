@@ -178,23 +178,35 @@ void Mat::sortSegs(){
     // construct graph
     // { idx, col overlaps } min heap, sort by col overlaps
     // enable the max col overlap be on the top of the stack when DFS
-    map< int, priority_queue<pair<int,int>, vector<pair<int,int>>, cmp> > g;
-    for (int i=0; i<n_segs; ++i){
-       for (int j=i+1; j<n_segs; ++j ){
-           // skip segs belonging to the same panel
-           if (id2r[i]==id2r[j]) continue;
-           
-           int sim = checkSim(cols_seg[i],cols_seg[j]);
-           if ( sim ){ 
-               g[i].push({j, sim});
-               g[j].push({i, sim});
-           }
-       }
-       if ( !g.count(i) ) {
-           insular++;
-           g[i].push( {i,0} );
-       }
-    }
+    vector< priority_queue<pair<int,int>, vector<pair<int,int>>, cmp> >
+      g(n_segs);
+
+    vector< vector<int> > col_to_seg(n);
+    for (int i=0; i<n_segs; i++ )
+      for ( auto c: cols_seg[i] ) col_to_seg[c].push_back(i);
+
+    vector<int> mark(n_segs,-1);
+
+    for (int i=0; i<n_segs; ++i)
+      {
+        for ( auto col_i: cols_seg[i] )
+          for ( auto seg_j: col_to_seg[col_i] )
+            {
+              if ( seg_j <= i ) continue;
+              if ( id2r[i] == id2r[seg_j] ) continue;
+              if ( mark[seg_j] == i ) continue;
+              mark[seg_j] = i;
+              int sim = checkSim(cols_seg[i],cols_seg[seg_j]);
+              if ( sim ){
+                g[i].push({seg_j, sim});
+                g[seg_j].push({i, sim});
+              }
+            }
+        if ( g[i].empty() ) {
+          insular++;
+          g[i].push( {i,0} );
+        }
+      }
 
     if ( insular>0 ){
         printf("insular segs = %d\n",insular);
