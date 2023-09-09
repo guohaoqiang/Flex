@@ -239,6 +239,7 @@ void Mat::sortSegs(){
             segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
             
             newVals1.push_back(newVals[i]);
+    
         }        
         segPtr1.push_back(segPtr1.back()+seg_nnz);
         for (int i=0; i<tm; ++i){

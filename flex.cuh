@@ -7,8 +7,10 @@
 #include "DataLoader.cuh"
 #include "mat.cuh"
 #include "flex_spmm.cuh"
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
 //#define OUTPUTCSV
-
+namespace cg = cooperative_groups;
 
 #define CUBE4X4
 #define RECT8X4
