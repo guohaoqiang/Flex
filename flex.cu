@@ -2504,7 +2504,7 @@ void flexspmm_cuda_w_pre_v23(){
         }
     }
     //__syncthreads();
-    cg::wait(tb);
+    if ( !use_memcpy_asy ) cg::wait(tb);
     
     while ( (( (seg_idx[0]>=0) && (seg_idx[0] < tail_seg_idx) )  ||  
             (seg_idx[0] >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx[0] < md.n_segs)  ){ // over tile segments in a bucket
@@ -2700,6 +2700,9 @@ resCheck(float* h_gold, float* h_res, const Mat& mat, Perfs& perfRes)
 }
 void run(DataLoader& input_vo){
 
+    Perfs perfRes;
+    input_vo.c_cuSpmm_run(perfRes);
+    
     // Prepare a DFS-ordered matrix.
     DataLoaderDFS input_dfs(input_vo);
     DataLoaderRabbit input_rabbit(input_vo);
@@ -2747,14 +2750,13 @@ void run(DataLoader& input_vo){
         ("l1tex__m_l1tex2xbar_throughput.avg.pct_of_peak_sustained_elapsed");
     NPerf_metric_collect("dram__bytes.sum");
     
-    Perfs perfRes;
     
     // ------------ run baseline cuSpmm ----------------
     //input_dfs.c_cuSpmm_run(perfRes);
     //input_deg.c_cuSpmm_run(perfRes);
     //input_rcm.c_cuSpmm_run(perfRes);
     //input_gorder.c_cuSpmm_run(perfRes);
-    input_vo.c_cuSpmm_run(perfRes);
+   // input_vo.c_cuSpmm_run(perfRes);
     // ---------------------------------------------------
 /*    
     cudaEventRecord(cuspmm_stop);
@@ -2812,7 +2814,6 @@ void run(DataLoader& input_vo){
 
 // v10: w/o buffering, rows-based seg allocation, w/o vec, broadcast within a warp 
 // v22: w/o buffering, sm-based seg allocation, w/o vec, broadcast within a warp 
-//#define flex_kernel flexspmm_cuda_wo_pre_v10
 //#define flex_kernel flexspmm_cuda_wo_pre_v22
 
 // v11: w/o buffering, rows-based seg allocation, vec4 dense input, broadcast within a warp 
@@ -2821,7 +2822,7 @@ void run(DataLoader& input_vo){
 // v12: double buffering, rows-based seg allocation, w/o vec 
 // v23: double buffering, sm-based seg allocation, w/o vec 
 //#define flex_kernel flexspmm_cuda_w_pre_v12
-#define flex_kernel flexspmm_cuda_w_pre_v23
+//#define flex_kernel flexspmm_cuda_w_pre_v23
 
 
 // v15: single buffering, rows-based seg allocation, vec r and c of sparse input  
@@ -2832,7 +2833,7 @@ void run(DataLoader& input_vo){
 // v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
-//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -2987,6 +2988,9 @@ void run(DataLoader& input_vo){
 
     const char* stats_file_name = "flex-tile-stats.log";
     FILE *tile_stats = fopen(stats_file_name,"w");
+    const char* nperf_file_name = "flex-tile-nperf.csv";
+    FILE *tile_nperf = fopen(nperf_file_name,"aw");
+    fprintf(tile_nperf,"%s\n",input_vo.graph_name.c_str());
     printf("Writing detailed statistics to file %s\n",stats_file_name);
 
     pTable table(stdout);
@@ -3139,10 +3143,12 @@ void run(DataLoader& input_vo){
             // perfectly balanced.
 
               table.entry("Ord", "%3s", input.vertex_order_abbr);
+              fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
               //table.entry
               //  ("Tile", "%-6s",
               //   to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
               table.entry("tm", "%3d", spMats[id].tm);
+              fprintf(tile_nperf,"%3d,", spMats[id].tm);
 
               // The maximum number of active blocks per SM for this
               // kernel when launched with a block size of thd_per_block.
@@ -3168,9 +3174,13 @@ void run(DataLoader& input_vo){
               const int act_wps = block_n_wps * bl_per_sm;
 
               table.entry("b/s", "%3d", bl_per_sm_available);
+              fprintf(tile_nperf,"%3d,", bl_per_sm_available);
+              
               table.entry("aw", "%2d", act_wps);
+              fprintf(tile_nperf,"%2d,", act_wps);
 
               table.entry("atm/r", "%5.2f", double(mat.atomic_op)/mat.m );
+              fprintf(tile_nperf,"%5.2f,",  double(mat.atomic_op)/mat.m );
               
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;
@@ -3183,7 +3193,9 @@ void run(DataLoader& input_vo){
               const double nz_p_t = double(mat.nnz) / n_tiles;
               if (false) table.entry("nz/t", "%5.2f", nz_p_t);
               const double nz_p_seg = double(mat.nnz) / n_segs;
+              
               table.entry("nz/seg", "%7.2f", nz_p_seg);
+              fprintf(tile_nperf,"%7.2f,", nz_p_seg);
 
               const double n_t_rows = double(mat.m) / mat.tm;
 
@@ -3200,11 +3212,13 @@ void run(DataLoader& input_vo){
               // Worst-case: 1.  Ideal: Average degree.
 
               table.entry("B-Re", "%4.2f", nz_p_toc);
+              fprintf(tile_nperf,"%4.2f,", nz_p_toc);
 
               // Get and print elapsed time.
               //
               const double et_seconds = NPerf_kernel_et_get();
               table.entry( "t/µs", "%7.1f", et_seconds * 1e6 );
+              fprintf(tile_nperf,"%7.1f,", et_seconds * 1e6 );
               const bool more_timing = false;
               if ( more_timing )
                 {
@@ -3212,6 +3226,7 @@ void run(DataLoader& input_vo){
                   table.entry( "A t/µs", "%8.2f", et_clock_avg_us );
                 }
               table.entry( "Imb", "%3.0f", 100 * imbalance_penalty );
+              fprintf(tile_nperf,"%3.0f,", 100 * imbalance_penalty );
 
               // Write a heading that will span multiple columns.
               //
@@ -3225,6 +3240,8 @@ void run(DataLoader& input_vo){
                 ( "All", "%4.1f",
                   NPerf_metric_value_get("sm__sass_inst_executed_op_ld.sum")
                   / n_madd_p_wp );
+              fprintf(tile_nperf,"%4.1f,", NPerf_metric_value_get("sm__sass_inst_executed_op_ld.sum") / n_madd_p_wp  );
+              
               if (false){
                 const int n_ld_trow = 2;  // Loads per tile row. tileRowPtr (two)
                 const int n_ld_tile = 4;  // Loads per tile.
@@ -3261,8 +3278,12 @@ void run(DataLoader& input_vo){
                 ( "G", "%4.1f",
                   NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
                   / n_madd_p_wp );
+              fprintf(tile_nperf, "%4.1f,",
+                  NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
+                  / n_madd_p_wp );
 
               table.entry( "GC", "%4.1f", n_ld_p_madd);
+              fprintf(tile_nperf, "%4.1f,", n_ld_p_madd);
 
               if ( show_insn_local )
                 table.entry
@@ -3282,10 +3303,18 @@ void run(DataLoader& input_vo){
                 ( "All", "%5.2f",
                   NPerf_metric_value_get("sm__sass_inst_executed_op_st.sum")
                   / n_madd_p_wp );
+              fprintf(tile_nperf, "%5.2f,",
+                  NPerf_metric_value_get("sm__sass_inst_executed_op_st.sum")
+                  / n_madd_p_wp );
+              
               table.entry
                 ( "G", "%4.2f",
                   NPerf_metric_value_get("sm__sass_inst_executed_op_global_st.sum")
                   / n_madd_p_wp );
+              fprintf(tile_nperf, "%4.2f,",
+                  NPerf_metric_value_get("sm__sass_inst_executed_op_global_st.sum")
+                  / n_madd_p_wp );
+              
               if ( show_insn_local )
                 table.entry
                   ( "L", "%3.1f",
@@ -3303,6 +3332,9 @@ void run(DataLoader& input_vo){
                 ( "All", "%5.1f",
                   NPerf_metric_value_get("sm__inst_executed.sum")
                   / n_madd_p_wp );
+              fprintf(tile_nperf, "%5.1f,",
+                  NPerf_metric_value_get("sm__inst_executed.sum")
+                  / n_madd_p_wp );
 
               table.header_span_end();
 
@@ -3312,10 +3344,16 @@ void run(DataLoader& input_vo){
                 ( "Cyc", "%4.0f",
                   NPerf_metric_value_get("sm__cycles_elapsed.max") * fp32_per_chip
                   / n_madd );
+              fprintf(tile_nperf, "%4.0f,",
+                  NPerf_metric_value_get("sm__cycles_elapsed.max") * fp32_per_chip
+                  / n_madd );
 
               table.header_span_start("L1←L2");
               table.entry
                 ( "Bytes", "%5.2f",
+                  NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
+                    / n_madd );
+              fprintf(tile_nperf, "%5.2f,",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
                     / n_madd );
               if ( false ){
@@ -3330,6 +3368,7 @@ void run(DataLoader& input_vo){
                       + mat.nnz * n_ld_nz
                       + mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
               table.entry( "BC", "%5.2f", n_bytes / n_madd );
+              fprintf(tile_nperf, "%5.2f,", n_bytes / n_madd );
               table.header_span_end();
 
               table.header_span_end();
@@ -3343,24 +3382,38 @@ void run(DataLoader& input_vo){
                     + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
                   / et_seconds * 1e-9 );
 
+              fprintf(tile_nperf, "%4.0f,",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
+                  / et_seconds * 1e-9 );
               table.entry
                 ("% Pk", "%4.1f",
                  NPerf_metric_value_get
                  ("l1tex__m_l1tex2xbar_throughput"
                   ".avg.pct_of_peak_sustained_elapsed"));
-
+              fprintf(tile_nperf, "%4.1f,",
+                 NPerf_metric_value_get
+                 ("l1tex__m_l1tex2xbar_throughput"
+                  ".avg.pct_of_peak_sustained_elapsed"));
               table.header_span_end();
 
               table.header_span_start("L2 ⇆ DRAM");
               table.entry
                 ( "Bytes", "%5.2f",
                   NPerf_metric_value_get("dram__bytes.sum") / n_madd );
+              fprintf(tile_nperf, "%5.2f,",
+                  NPerf_metric_value_get("dram__bytes.sum") / n_madd );
               table.entry
                 ( "GB/s", "%4.0f",
+                  NPerf_metric_value_get("dram__bytes.sum") / et_seconds * 1e-9 );
+              fprintf(tile_nperf, "%4.0f,",
                   NPerf_metric_value_get("dram__bytes.sum") / et_seconds * 1e-9 );
 
               table.entry
                 ("% Pk", "%5.1f",
+                 NPerf_metric_value_get
+                 ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"));
+              fprintf(tile_nperf, "%5.1f,",
                  NPerf_metric_value_get
                  ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed"));
 
@@ -3369,6 +3422,7 @@ void run(DataLoader& input_vo){
               if ( true ) {
                   table.header_span( "FP Thpt", 1);
                   table.entry( "GFLOP/s", "%9.1f", 1e-9 * n_madd / et_seconds );
+                  fprintf(tile_nperf, "%9.1f,", 2 * 1e-9 * n_madd / et_seconds );
                   table.header_span_end();
               }
             // transfer data to host
@@ -3377,6 +3431,7 @@ void run(DataLoader& input_vo){
                 cudaMemcpyDeviceToHost);
             resCheck( input_vo.h_ref_c.data(), h_res_c, spMats[id], perfRes );
             table.entry("errs(%)", "%4f", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
+            fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
 
             float t = elap_t*(1e-3);
             perfRes.flex_spmm_time.push_back(t);
@@ -3394,20 +3449,6 @@ void run(DataLoader& input_vo){
     free(h_res_c);
     cuda_freez( timing_dh.timing_items );
 
-#ifdef OUTPUTCSV
-    std::ofstream myfile(input.graph_name+"_time.csv");
-    myfile << "cuSpmm," << "4X4,"<<"8X4,"<<"16X4,"<<"32X4,"<< "64X4,"<<"128X4,"<<"256X4,"
-           << "4X8,"<<"8X8,"<<"16X8,"<<"32X8,"<< "64X8,"<<"128X8,"<<"256X8,"
-           << "4X16,"<<"8X16,"<<"16X16,"<<"32X16,"<< "64X16,"<<"128X16,"<<"256X16,"
-           << "4X32,"<<"8X32,"<<"16X32,"<<"32X32,"<< "64X32,"<<"128X32,"<<"256X32"<<"\n";
-    myfile << perfRes.cuispmm_time << ",";
-    for (int i=0; i<perfRes.flex_spmm_time.size(); ++i){
-        myfile << perfRes.flex_spmm_time[i];
-        if (i<perfRes.flex_spmm_time.size()-1)    myfile<<","; 
-    }
-    myfile << "\n";
-    myfile.close(); 
-#endif
 }
 void cuSpmm(DataLoader& input, Perfs& perfRes){
     float elap_t = 0.0;

@@ -280,10 +280,11 @@ void Mat::csr2tile(){
 	} 
     n_segs = segPtr.size()-1;
     
-    bool seg_sort = true;
+    bool seg_sort = false;
     if (seg_sort) {
         //permute_segs();
         sortSegs();
+    }
     
 
         int device_id;
@@ -324,7 +325,7 @@ void Mat::csr2tile(){
         assert( validate_nnz==segPtr.back() );
         assert( grouped_tailSeg.size()==n_sm+1 );
         assert( next_seg.size()==n_sm+1 );
-    }
+    
 }
 void Mat::print3(int l){
     if ( true ){
@@ -381,8 +382,8 @@ void Mat::csr2seg_Cmajor(int ridx){
             int c = rowPtr[i] + cOffset[i-rowStart];
             if ( colIdx[c]==j && c<rowPtr[i+1] ){
                 // nze values
-                //segNzRowIdx.push_back(i-rowStart);
-                segNzRowIdx.push_back(i);
+                segNzRowIdx.push_back(i-rowStart);
+                //segNzRowIdx.push_back(i);
                 segNzColIdx.push_back(j);
                 segNzRCIdx.push_back(i-rowStart);
                 
