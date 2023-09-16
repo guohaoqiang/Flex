@@ -77,6 +77,202 @@ timing_end()
       ti.smid_end = smid_get();
     }
 }
+/*************** CSR ge-spmm (top) *******************/
+__global__ 
+void spmm_test0()
+{
+    // this code is adapted from "https://github.com/hgyhungry/ge-spmm.git"
+    
+    // kernel for k in [1,32)
+    // grid: dim3( (m+128/k-1)/(128/k), 1, 1  ) 
+    // block: dim3( k, 128/k, 1 )
+    // shared m: 32*8*(sizeof(int)+sizeof(float)) 
+   
+    const Mat_POD& md = mat_dev; 
+
+    timing_start();
+    int rid = blockDim.y*blockIdx.x+threadIdx.y;
+    if (rid<md.m) {
+        int cid = (blockIdx.y<<5)+threadIdx.x;
+        int lb = md.csr_rowPtr_dev[rid];
+        int hb = md.csr_rowPtr_dev[(rid+1)];
+        int offset = 0;
+        float acc=0;
+        if (blockIdx.y!=gridDim.y-1){
+            for (int ptr = lb; ptr<hb; ptr++) {
+                offset = md.csr_col_dev[ptr]*md.k+cid;
+                acc += md.csr_vals_dev[ptr]*md.mat_b_dev[offset];
+            }
+            md.mat_c_dev[(rid*md.k+cid)] = acc;
+        }
+        else {
+            for (int ptr = lb; ptr<hb; ptr++) {
+                if (cid<md.k) {
+                offset = md.csr_col_dev[ptr]*md.k+cid;}
+                acc += md.csr_vals_dev[ptr]*md.mat_b_dev[offset];
+            }
+            if (cid<md.k) {
+            md.mat_c_dev[(rid*md.k+cid)] = acc;}
+        }
+    }
+    timing_end();
+}
+
+__global__ 
+void spmm_test1()
+{
+    // this code is adapted from "https://github.com/hgyhungry/ge-spmm.git"
+    
+    // kernel for k in [32,64)
+    // grid: dim3( (m+4-1)/4, (k+31)/32, 1  ) 
+    // block: dim3( 32,4,1 )
+    // shared m: 32*4*(sizeof(int)+sizeof(float)) 
+    const Mat_POD& md = mat_dev; 
+    
+    timing_start();
+    extern __shared__ int sh[];
+    int *colInd_sh = sh;
+    float *val_sh = (float *)&sh[(blockDim.y<<5)];
+    int shmem_offset = (threadIdx.y<<5);
+    int thread_idx = shmem_offset+threadIdx.x;
+
+    int rid = blockDim.y*blockIdx.x+threadIdx.y;
+
+    if (rid<md.m) {
+        int cid = (blockIdx.y<<5)+threadIdx.x;
+        int lb = md.csr_rowPtr_dev[rid];
+        int hb = md.csr_rowPtr_dev[(rid+1)];
+        int ptr = lb+threadIdx.x;
+        int offset;
+        float acc=0;
+
+        if (blockIdx.y != gridDim.y-1) {
+            for (int jj=lb; jj<hb; jj+=32) {
+                if (ptr<hb) {
+                    val_sh[thread_idx] = md.csr_vals_dev[ptr];
+                    colInd_sh[thread_idx] = md.k*md.csr_col_dev[ptr];
+                }
+                __syncwarp();
+                ptr += 32;
+
+                for (int kk=0; kk<32&&jj+kk<hb; kk++) {
+                    offset = colInd_sh[(shmem_offset+kk)] + cid;
+                    acc += val_sh[(shmem_offset+kk)]*md.mat_b_dev[offset];
+                }
+                __syncwarp();
+            }
+            md.mat_c_dev[(rid*md.k+cid)] = acc;
+        }
+        else {
+            for (int jj=lb; jj<hb; jj+=32) {
+                if (ptr<hb) {
+                    val_sh[thread_idx] = md.csr_vals_dev[ptr];
+                    colInd_sh[thread_idx] = md.k*md.csr_col_dev[ptr];
+                }
+                __syncwarp();
+                ptr += 32;
+
+                for (int kk=0; kk<32&&jj+kk<hb; kk++) {
+                    offset = colInd_sh[(shmem_offset+kk)] + cid;
+                    if (cid<md.k) {
+                    acc += val_sh[(shmem_offset+kk)]*md.mat_b_dev[offset];
+                    }
+                }
+                __syncwarp();
+            }
+            if (cid<md.k) {
+            md.mat_c_dev[(rid*md.k+cid)] = acc;
+            }
+        }
+    }
+    timing_end();
+}
+
+__global__ 
+void spmm_test2()
+{
+
+    // this code is adapted from "https://github.com/hgyhungry/ge-spmm.git"
+    
+    // kernel for k in [64,+oo)
+    // grid: dim3( (m+8-1)/8, (k+63)/64, 1  ) 
+    // block: dim3( 32,8,1 )
+    // shared m: 32*8*(sizeof(int)+sizeof(float)) 
+
+    const Mat_POD& md = mat_dev; 
+    
+    timing_start();
+    extern __shared__ int sh[];
+    int *colInd_sh = sh;
+    float *val_sh = (float *)&sh[(blockDim.y<<5)];
+    int shmem_offset = (threadIdx.y<<5);
+    int thread_idx = shmem_offset+threadIdx.x;
+
+    int rid = blockDim.y*blockIdx.x+threadIdx.y;
+
+   if (rid<md.m) {
+        int cid = (blockIdx.y<<6)+threadIdx.x;
+        int lb = md.csr_rowPtr_dev[rid];
+        int hb = md.csr_rowPtr_dev[(rid+1)];
+        int ptr = lb+threadIdx.x;
+        int offset;
+        float acc1=0, acc2=0, val;
+
+        if (blockIdx.y != gridDim.y-1) {
+            for (int jj=lb; jj<hb; jj+=32) {
+                if (ptr<hb) {
+                    val_sh[thread_idx] = md.csr_vals_dev[ptr];
+                    colInd_sh[thread_idx] = md.k*md.csr_col_dev[ptr];
+                }
+                __syncwarp();
+                ptr += 32;
+
+                for (int kk=0; kk<32&&jj+kk<hb; kk++) {
+                    offset = colInd_sh[(shmem_offset+kk)] + cid;
+                    val = val_sh[(shmem_offset+kk)];
+                    acc1 += val*md.mat_b_dev[offset];
+                    acc2 += val*md.mat_b_dev[offset+32];
+                }
+                __syncwarp();
+            }
+            offset = rid*md.k+cid;
+            md.mat_c_dev[offset] = acc1;
+            md.mat_c_dev[offset+32] = acc2;
+        }
+        else {
+            int nout = (md.k-cid+31)/32;
+            for (int jj=lb; jj<hb; jj+=32) {
+                if (ptr<hb) {
+                    val_sh[thread_idx] = md.csr_vals_dev[ptr];
+                    colInd_sh[thread_idx] = md.k*md.csr_col_dev[ptr];
+                }
+                __syncwarp();
+                ptr += 32;
+
+                for (int kk=0; kk<32&&jj+kk<hb; kk++) {
+                    val = val_sh[(shmem_offset+kk)];
+                    offset = colInd_sh[(shmem_offset+kk)] + cid;
+                    if (nout>0) {
+                    acc1 += val*md.mat_b_dev[offset];
+                    }
+                    if (nout>1) {
+                    acc2 += val*md.mat_b_dev[offset+32];
+                    }
+                }
+                __syncwarp();
+            }
+            offset = rid*md.k+cid;
+            if (nout>0) {
+                md.mat_c_dev[offset] = acc1;
+            }
+            if (nout>1) {
+                md.mat_c_dev[(offset+32)] = acc2;
+            }
+        }
+    }
+    timing_end();
+}
+/*************** CSR ge-spmm (bottom) *******************/
 
 __global__
 void flexspmm_v9_permuteX(){
@@ -2698,7 +2894,214 @@ resCheck(float* h_gold, float* h_res, const Mat& mat, Perfs& perfRes)
 
     memset(h_res, 0, n*m*sizeof(float));
 }
+void resCheck2(float* h_gold, float* h_res, int len){
+    int errors = 0;
+    for (int i=0; i<len; ++i){
+        if (fabs(h_gold[i]-h_res[i])>0.01){
+            errors++;
+        }
+    }    
+    if (errors){
+        printf("ge-spmm errors: %d\n",errors);
+    }else{
+        printf("Congrats\n");
+    }
+
+}
+void run_ge_spmm(DataLoader& input_vo){
+     
+    Perfs perfRes;
+    input_vo.c_cuSpmm_run(perfRes);
+    Mat mat(input_vo, 0, 0); // the last two args are useless
+    mat.launch_prep();
+
+    NPerf_init();
+    GPU_Info info = print_gpu_and_kernel_info();
+    const cudaDeviceProp cuda_prop = info.cuda_prop;
+    // Get number of SMs (aka MPs).
+    //
+    const int num_sm = cuda_prop.multiProcessorCount;
+
+    // Compute number of FP32 per chip.
+    //
+    const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
+    
+    NPerf_metric_collect("sm__cycles_elapsed.max");                                                                            
+    NPerf_metric_collect("sm__inst_executed.sum");
+    NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
+    NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_st.sum");
+    NPerf_metric_collect("sm__sass_inst_executed_op_global_st.sum");
+    NPerf_metric_collect
+        ("gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed");
+    NPerf_metric_collect
+        ("l1tex__m_l1tex2xbar_throughput.avg.pct_of_peak_sustained_elapsed");
+    NPerf_metric_collect("dram__bytes.sum");
+    
+    struct App_Kernel_Info {
+         App_Kernel_Info  
+         (Kernel_Info& k, 
+          const char *name_b): k_ptr(k.func_ptr),name_base{name_b}{}
+        GPU_Info_Func k_ptr;
+        const char *name_base;
+    };  
+    vector<App_Kernel_Info> kernels;
+    
+    #define PUSH_KERNEL(kb,k) \
+    {  kernels.emplace_back(info.GET_INFO((k)),#kb); }
+
+#define GRE64
+#ifdef LESS32
+    PUSH_KERNEL(spmm_test0,spmm_test0);
+#endif
+#ifdef LESS64
+    PUSH_KERNEL(spmm_test1,spmm_test1);
+#endif
+#ifdef GRE64
+    PUSH_KERNEL(spmm_test2,spmm_test2);
+#endif
+    
+    vector<Timing_Item> timing_items;
+    Timing timing_dh{nullptr};
+    size_t timing_items_bytes = 0;
+    int grid_n_wps;
+    
+    pTable table(stdout);
+    Kernel_Info* const ki = &info.get_info(kernels[0].k_ptr);
+    typedef void (*KPtr)();
+    pTable_Row row(table);
+    
+    //float* gespmm_c;
+    //cudaMalloc(&gespmm_c, input_vo.gpuC_bytes);
+    //cudaMemset(gespmm_c, 0, input_vo.gpuC_bytes);
+    if (input_vo.dim<32){
+        const int row_per_block = 128/input_vo.dim;
+        const int n_block = (input_vo.m+row_per_block-1)/row_per_block;
+        {   
+            const int max_wps = n_block * (input_vo.dim * row_per_block) / 32; 
+            grid_n_wps = max_wps;
+            timing_items.resize( max_wps );
+            timing_items_bytes = timing_items.size() * sizeof(timing_items[0]);
+            CE( cudaFree( timing_dh.timing_items ) );
+            CE( cudaMalloc( &timing_dh.timing_items, timing_items_bytes ) );
+            CE( cudaMemset( timing_dh.timing_items, 0, timing_items_bytes ) );
+            CE( cudaDeviceSynchronize() );
+            CE( cudaMemcpyToSymbol
+                ( timing_dev, &timing_dh, sizeof(timing_dh),
+                  0, cudaMemcpyHostToDevice ) );
+        }
+        for ( NPerf_data_reset(); NPerf_need_run_get(); ){
+           KPtr(ki->func_ptr)<<<dim3(n_block,1,1),dim3(input_vo.dim, row_per_block, 1)>>>();
+        }
+
+    }else if (input_vo.dim<64){
+        const int tile_k = (input_vo.dim+31)/32;
+        const int n_block = (input_vo.m+4-1)/4;
+
+        {   
+            const int max_wps = n_block * tile_k * 4; 
+            grid_n_wps = max_wps;
+            timing_items.resize( max_wps );
+            timing_items_bytes = timing_items.size() * sizeof(timing_items[0]);
+            CE( cudaFree( timing_dh.timing_items ) );
+            CE( cudaMalloc( &timing_dh.timing_items, timing_items_bytes ) );
+            CE( cudaMemset( timing_dh.timing_items, 0, timing_items_bytes ) );
+            CE( cudaDeviceSynchronize() );
+            CE( cudaMemcpyToSymbol
+                ( timing_dev, &timing_dh, sizeof(timing_dh),
+                  0, cudaMemcpyHostToDevice ) );
+        }
+        for ( NPerf_data_reset(); NPerf_need_run_get(); ){
+           KPtr(ki->func_ptr)<<<dim3(n_block,tile_k,1),dim3(32, 4, 1),32*4*(sizeof(int)+sizeof(float))>>>();
+        }
+
+    }else{
+        const int tile_k = (input_vo.dim+63)/64;
+        const int n_block = (input_vo.m+8-1)/8;
+
+        {   
+            const int max_wps = n_block * tile_k * 8; 
+            grid_n_wps = max_wps;
+            timing_items.resize( max_wps );
+            timing_items_bytes = timing_items.size() * sizeof(timing_items[0]);
+            CE( cudaFree( timing_dh.timing_items ) );
+            CE( cudaMalloc( &timing_dh.timing_items, timing_items_bytes ) );
+            CE( cudaMemset( timing_dh.timing_items, 0, timing_items_bytes ) );
+            CE( cudaDeviceSynchronize() );
+            CE( cudaMemcpyToSymbol
+                ( timing_dev, &timing_dh, sizeof(timing_dh),
+                  0, cudaMemcpyHostToDevice ) );
+        }
+        for ( NPerf_data_reset(); NPerf_need_run_get(); ){
+           KPtr(ki->func_ptr)<<<dim3(n_block,tile_k,1),dim3(32, 8, 1),32*8*(sizeof(int)+sizeof(float))>>>();
+        }
+    }
+
+    // Copy per-warp timing data back to host.
+    //
+    CE( cudaMemcpy( timing_items.data(), timing_dh.timing_items,
+                    timing_items_bytes, cudaMemcpyDeviceToHost ) );
+                // Compute per-sm minimum-start and maximum-finish (end) times.
+    //
+    map<int32_t,Timing_Item> sm_start_end;
+    int n_migs = 0; // Number of migrations.
+    for ( auto& ti: views::take(timing_items,grid_n_wps+1) )
+      if ( ti.smid_start != ti.smid_end )
+        {
+          n_migs++;
+        }
+      else
+        {
+          auto& tis = sm_start_end[ti.smid_start];
+          if ( tis.time_start == tis.time_end ) tis = ti;
+          set_min( tis.time_start, ti.time_start );
+          set_max( tis.time_end, ti.time_end );
+        }
+
+    if ( n_migs ) printf("-- Number of migrations: %d\n",n_migs);
+    //
+    // Note: The per-sm data collection won't work if a block
+    // migrates from one sm to another.
+
+    // Compute average sm execution time and maximum sm execution time.
+    //
+    int64_t et_sum = 0;
+    vector<int64_t> et;
+    for ( auto& [smid,tis]: sm_start_end )
+      {
+        const int64_t elapsed = tis.time_end - tis.time_start;
+        et_sum += elapsed;
+        et.push_back( elapsed );
+      }
+
+    ranges::sort( et, ranges::greater() );
+
+    const double clock_period_us = 1e6 / info.clock_freq_hz;
+    const double et_clock_max_us = et[0] * clock_period_us;
+    const double et_clock_avg_us = et_sum * clock_period_us / num_sm;
+    const double imbalance_penalty =
+      et_clock_avg_us ? et_clock_max_us / et_clock_avg_us - 1 : 0.0;
+
+    const double et_seconds = NPerf_kernel_et_get();
+    table.entry( "t/µs", "%7.1f", et_seconds * 1e6 );
+
+    table.entry( "Imb", "%3.0f", 100 * imbalance_penalty );
+
+    float* const h_res_c = (float*) malloc( input_vo.gpuC_bytes );
+    cudaMemcpy( h_res_c, mat.mat_c_dev, input_vo.gpuC_bytes, cudaMemcpyDeviceToHost );
+    resCheck2( input_vo.h_ref_c.data(), h_res_c, input_vo.m*input_vo.dim);
+        
+    CE( cudaFree( timing_dh.timing_items ) );
+    free( h_res_c );
+}
 void run(DataLoader& input_vo){
+
+    if ( false ){
+        run_ge_spmm(input_vo);
+        return ;
+    }
 
     Perfs perfRes;
     input_vo.c_cuSpmm_run(perfRes);

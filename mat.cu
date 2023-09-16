@@ -21,6 +21,12 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
             voMp_bytes = 0; 
             nnz_limit = NNZ_LIMIT;
             atomic_op = 0;
+
+
+            csr_rowPtr_dev = dl.rowPtr_dev;
+            csr_col_dev = dl.col_dev;
+            csr_vals_dev = dl.vals_dev;
+            csr_mat_b_dev = dl.gpuX;
 }
 void Mat::launch_prep(){
     dl.gpuC_zero();
