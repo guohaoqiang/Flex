@@ -118,7 +118,7 @@ DataLoader::cuda_alloc_cpy()
 #endif
 
     CUDA_CHECK(cudaMalloc(&rowPtr_dev, sizeof(unsigned int) * (m+1)));
-    CUDA_CHECK(cudaMemcpy(rowPtr_dev, rowPtr.data(), sizeof(unsigned int)*(n+1), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(rowPtr_dev, rowPtr.data(), sizeof(unsigned int)*(m+1), cudaMemcpyHostToDevice));
     
     CUDA_CHECK(cudaMalloc(&col_dev, sizeof(unsigned int) * nnz));
     CUDA_CHECK(cudaMemcpy(col_dev, col.data(), sizeof(unsigned int)*nnz, cudaMemcpyHostToDevice));

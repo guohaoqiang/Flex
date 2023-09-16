@@ -41,6 +41,13 @@ class Mat_POD{
 	int* segNzColIdx_dev; 
 	int* grouped_tailSeg_dev; 
 	int* next_seg_dev; 
+
+    // ge-spmm
+    unsigned int* csr_rowPtr_dev;
+    unsigned int* csr_col_dev;
+    float* csr_vals_dev;
+    float* csr_mat_b_dev;
+
 };
 extern __constant__ Mat_POD mat_dev;
 class Mat : public Mat_POD{
