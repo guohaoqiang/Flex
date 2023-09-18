@@ -280,30 +280,44 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
   vals.resize( dl.col.size() );
 
   //
-  // Perform Depth-First Search (DFS)
+  // Perform Depth-First Search (DFS) on Each Component
   //
-  auto root = dst_iter_make(0);
-  vector< decltype(root) > stack { root };
 
   rowPtr.reserve( n+1 );
   rowPtr.push_back( 0 );
-  rowPtr.push_back( root.size() );
 
-  while ( !stack.empty() )
+  for ( int dfs_root_vo_idx = 0; dfs_root_vo_idx < n; )
     {
-      auto& dst_iter = stack.back();
+      auto root = dst_iter_make(dfs_root_vo_idx);
+      vector< decltype(root) > stack { root };
+      if ( dfs_root_vo_idx ) vo_to_dfs[ dfs_root_vo_idx ] = rowPtr.size() - 1;
+      rowPtr.push_back( rowPtr.back() + root.size() );
 
-      while ( dst_iter && vo_to_dfs[ dst_iter.front() ] ) dst_iter.advance(1);
-      if ( !dst_iter ) { stack.pop_back();  continue; }
+      while ( !stack.empty() )
+        {
+          auto& dst_iter = stack.back();
+          while ( dst_iter && vo_to_dfs[ dst_iter.front() ] )
+            dst_iter.advance(1);
+          if ( !dst_iter ) { stack.pop_back();  continue; }
 
-      const uint dst_vo  = dst_iter.front();  dst_iter.advance(1);
-      const uint dst_dfs = rowPtr.size() - 1;
-      vo_to_dfs[ dst_vo ] = dst_dfs;
-      auto dst_node_iterator = dst_iter_make( dst_vo );
-      stack.push_back( dst_node_iterator );
-      // Update edge list pointer. (Row Number to vals/col array index.)
-      rowPtr.push_back( rowPtr.back() + dst_node_iterator.size() );
+          const uint dst_vo  = dst_iter.front();  dst_iter.advance(1);
+          const uint dst_dfs = rowPtr.size() - 1;
+          vo_to_dfs[ dst_vo ] = dst_dfs;
+          auto dst_node_iterator = dst_iter_make( dst_vo );
+          stack.push_back( dst_node_iterator );
+          // Update edge list pointer. (Row Number to vals/col array index.)
+          rowPtr.push_back( rowPtr.back() + dst_node_iterator.size() );
+        }
+
+      if ( rowPtr.size() > n ) break;
+
+      // Find a vertex that has not been searched.
+      while ( ++dfs_root_vo_idx < n && vo_to_dfs[dfs_root_vo_idx] );
+      assert( dfs_root_vo_idx < n );
     }
+
+  assert( rowPtr.size() == n + 1 );
+
   vo_to_dfs[0] = 0;
 
   vo_mp.resize(m);
@@ -318,11 +332,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
     {
       const auto src_dfs = vo_to_dfs[src_vo];
       const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
-      if( rowPtr[src_dfs] + d != rowPtr[src_dfs+1] ){
-          printf("rowPtr_len = %zd, rowPtr[%d] + %d = %d,  rowPtr[%d+1] = %d\n", 
-                  rowPtr.size(),   src_dfs, d, rowPtr[src_dfs] + d, src_dfs,rowPtr[src_dfs+1]);
-          assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
-      }
+      assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
 
       // Sort destinations.  Tiling algorithm needs dests sorted.
       vector< pair<float,uint> > perm;  perm.reserve(d);
