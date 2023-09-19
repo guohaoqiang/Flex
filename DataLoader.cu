@@ -4,7 +4,8 @@
 
 #include <ranges>
 
-DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
+DataLoader::DataLoader(const std::string& data_path, const int di)
+  :dl_original(this),dim(di){
     std::string data_name = data_path.substr(data_path.find_last_of("/")+1);
     graph_name = data_name.substr(0, data_name.find(".")); 
 
@@ -74,6 +75,38 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         //exit(0);
         c = 100;
     }
+
+    vector< map<int,float> > e_inv(m);
+    n_edges_one_way = 0;
+    n_edges_asymmetric = 0;
+    n_nodes_z_out = 0;
+    n_nodes_z_in = 0;
+    n_nodes_z_deg = 0;
+
+    for ( int r: views::iota(size_t(0),m) )
+      for ( int e: views::iota(rowPtr[r],rowPtr[r+1]) )
+        {
+          auto dst = col[e];
+          assert( e_inv[dst].count(r) == 0 );
+          e_inv[dst][r] = vals[e];
+        }
+
+    for ( int r: views::iota(size_t(0),m) )
+      for ( int e: views::iota(rowPtr[r],rowPtr[r+1]) )
+        if ( e_inv[r].count(col[e]) == 0 ) n_edges_one_way++;
+        else if ( e_inv[r][col[e]] != vals[e] ) n_edges_asymmetric++;
+
+    for ( int r: views::iota(size_t(0),m) )
+      {
+        const bool z_out = rowPtr[r] == rowPtr[r+1];
+        if ( z_out ) n_nodes_z_out++;
+        const bool z_in = e_inv[r].empty();
+        if ( z_in ) n_nodes_z_in++;
+        if ( z_in && z_out ) n_nodes_z_deg++;
+      }
+
+    is_directed = n_edges_one_way;
+
     vo_mp.resize(m);
     std::iota(vo_mp.begin(), vo_mp.end(), 0);
     cuda_alloc_cpy();
@@ -169,7 +202,7 @@ DataLoader::gpuC_zero()
 }
 
 
-DataLoader::DataLoader(const DataLoader& dl)
+DataLoader::DataLoader(const DataLoader& dl):dl_original(&dl)
 {
   #define CPY(m) m = dl.m
   CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name);
@@ -441,13 +474,21 @@ DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
   vector<Vertex> mgraph(n);
   int n_edges = 0;
 
+  // If true, perform clustering on a directed version of the graph.
+  const bool force_undirected = dl.is_directed;
+
   // Prepare structure used for Rabbit's community detection.
   //
   for ( auto v: views::iota(0ul,n) )
     {
       Vertex& vo = mgraph[v];
       // This edge weight is used only for computing modularity. 
-      for ( auto d: dst_iter_make(v) ) if ( d != v ) vo.dst_wht[d] = 1;
+      for ( auto d: dst_iter_make(v) ) 
+        if ( d != v )
+          {
+            vo.dst_wht[d] = 1;
+            if ( force_undirected ) mgraph[d].dst_wht[v] = 1;
+          }
       vo.deg_orig = vo.deg = vo.dst_wht.size();
       n_edges += vo.deg;
       vo.leaf_node = Tree_Node(v);

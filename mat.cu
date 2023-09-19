@@ -372,6 +372,9 @@ void Mat::csr2seg_Cmajor(int ridx){
     int dif = 0.1*nnz_limit; 
     int nnzInSeg = 0;
     int nnz_cur_panel = rowPtr[rowEnd] - rowPtr[rowStart];    
+
+    // If n_nodes_z_out>0 some panels can be empty, which tiling can't handle.
+    assert( !dl.dl_original->n_nodes_z_out );
     vector<int> atom(tm, 0);
 
     map<int,int> occ_cols;
