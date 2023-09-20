@@ -27,6 +27,8 @@ public:
     void c_cuSpmm_run(Perfs& perfRes);
     void gpuC_zero();
     
+
+    const DataLoader* const dl_original;
     std::vector<unsigned int> rowPtr;
     std::vector<unsigned int> col;
     std::vector<float> vals;
@@ -58,6 +60,11 @@ public:
     float *gpuRef1 = nullptr;
     float *gpuRef2 = nullptr;
 
+    bool is_directed;
+    // Number of nodes with zero in, zero out edges, or no edges at all.
+    int n_nodes_z_out, n_nodes_z_in, n_nodes_z_deg;
+    size_t n_edges_one_way;
+    size_t n_edges_asymmetric; // Have (u,v) & (v,u) but wht(u,v) != wht(v,u)
     size_t m, n, dim, c, nnz;
     std::string graph_name;
 

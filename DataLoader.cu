@@ -4,7 +4,8 @@
 
 #include <ranges>
 
-DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
+DataLoader::DataLoader(const std::string& data_path, const int di)
+  :dl_original(this),dim(di){
     std::string data_name = data_path.substr(data_path.find_last_of("/")+1);
     graph_name = data_name.substr(0, data_name.find(".")); 
 
@@ -74,6 +75,38 @@ DataLoader::DataLoader(const std::string& data_path, const int di):dim(di){
         //exit(0);
         c = 100;
     }
+
+    vector< map<int,float> > e_inv(m);
+    n_edges_one_way = 0;
+    n_edges_asymmetric = 0;
+    n_nodes_z_out = 0;
+    n_nodes_z_in = 0;
+    n_nodes_z_deg = 0;
+
+    for ( int r: views::iota(size_t(0),m) )
+      for ( int e: views::iota(rowPtr[r],rowPtr[r+1]) )
+        {
+          auto dst = col[e];
+          assert( e_inv[dst].count(r) == 0 );
+          e_inv[dst][r] = vals[e];
+        }
+
+    for ( int r: views::iota(size_t(0),m) )
+      for ( int e: views::iota(rowPtr[r],rowPtr[r+1]) )
+        if ( e_inv[r].count(col[e]) == 0 ) n_edges_one_way++;
+        else if ( e_inv[r][col[e]] != vals[e] ) n_edges_asymmetric++;
+
+    for ( int r: views::iota(size_t(0),m) )
+      {
+        const bool z_out = rowPtr[r] == rowPtr[r+1];
+        if ( z_out ) n_nodes_z_out++;
+        const bool z_in = e_inv[r].empty();
+        if ( z_in ) n_nodes_z_in++;
+        if ( z_in && z_out ) n_nodes_z_deg++;
+      }
+
+    is_directed = n_edges_one_way;
+
     vo_mp.resize(m);
     std::iota(vo_mp.begin(), vo_mp.end(), 0);
     cuda_alloc_cpy();
@@ -169,7 +202,7 @@ DataLoader::gpuC_zero()
 }
 
 
-DataLoader::DataLoader(const DataLoader& dl)
+DataLoader::DataLoader(const DataLoader& dl):dl_original(&dl)
 {
   #define CPY(m) m = dl.m
   CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name);
@@ -280,30 +313,44 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
   vals.resize( dl.col.size() );
 
   //
-  // Perform Depth-First Search (DFS)
+  // Perform Depth-First Search (DFS) on Each Component
   //
-  auto root = dst_iter_make(0);
-  vector< decltype(root) > stack { root };
 
   rowPtr.reserve( n+1 );
   rowPtr.push_back( 0 );
-  rowPtr.push_back( root.size() );
 
-  while ( !stack.empty() )
+  for ( int dfs_root_vo_idx = 0; dfs_root_vo_idx < n; )
     {
-      auto& dst_iter = stack.back();
+      auto root = dst_iter_make(dfs_root_vo_idx);
+      vector< decltype(root) > stack { root };
+      if ( dfs_root_vo_idx ) vo_to_dfs[ dfs_root_vo_idx ] = rowPtr.size() - 1;
+      rowPtr.push_back( rowPtr.back() + root.size() );
 
-      while ( dst_iter && vo_to_dfs[ dst_iter.front() ] ) dst_iter.advance(1);
-      if ( !dst_iter ) { stack.pop_back();  continue; }
+      while ( !stack.empty() )
+        {
+          auto& dst_iter = stack.back();
+          while ( dst_iter && vo_to_dfs[ dst_iter.front() ] )
+            dst_iter.advance(1);
+          if ( !dst_iter ) { stack.pop_back();  continue; }
 
-      const uint dst_vo  = dst_iter.front();  dst_iter.advance(1);
-      const uint dst_dfs = rowPtr.size() - 1;
-      vo_to_dfs[ dst_vo ] = dst_dfs;
-      auto dst_node_iterator = dst_iter_make( dst_vo );
-      stack.push_back( dst_node_iterator );
-      // Update edge list pointer. (Row Number to vals/col array index.)
-      rowPtr.push_back( rowPtr.back() + dst_node_iterator.size() );
+          const uint dst_vo  = dst_iter.front();  dst_iter.advance(1);
+          const uint dst_dfs = rowPtr.size() - 1;
+          vo_to_dfs[ dst_vo ] = dst_dfs;
+          auto dst_node_iterator = dst_iter_make( dst_vo );
+          stack.push_back( dst_node_iterator );
+          // Update edge list pointer. (Row Number to vals/col array index.)
+          rowPtr.push_back( rowPtr.back() + dst_node_iterator.size() );
+        }
+
+      if ( rowPtr.size() > n ) break;
+
+      // Find a vertex that has not been searched.
+      while ( ++dfs_root_vo_idx < n && vo_to_dfs[dfs_root_vo_idx] );
+      assert( dfs_root_vo_idx < n );
     }
+
+  assert( rowPtr.size() == n + 1 );
+
   vo_to_dfs[0] = 0;
 
   vo_mp.resize(m);
@@ -318,11 +365,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
     {
       const auto src_dfs = vo_to_dfs[src_vo];
       const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
-      if( rowPtr[src_dfs] + d != rowPtr[src_dfs+1] ){
-          printf("rowPtr_len = %zd, rowPtr[%d] + %d = %d,  rowPtr[%d+1] = %d\n", 
-                  rowPtr.size(),   src_dfs, d, rowPtr[src_dfs] + d, src_dfs,rowPtr[src_dfs+1]);
-          assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
-      }
+      assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
 
       // Sort destinations.  Tiling algorithm needs dests sorted.
       vector< pair<float,uint> > perm;  perm.reserve(d);
@@ -431,13 +474,21 @@ DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
   vector<Vertex> mgraph(n);
   int n_edges = 0;
 
+  // If true, perform clustering on a directed version of the graph.
+  const bool force_undirected = dl.is_directed;
+
   // Prepare structure used for Rabbit's community detection.
   //
   for ( auto v: views::iota(0ul,n) )
     {
       Vertex& vo = mgraph[v];
       // This edge weight is used only for computing modularity. 
-      for ( auto d: dst_iter_make(v) ) if ( d != v ) vo.dst_wht[d] = 1;
+      for ( auto d: dst_iter_make(v) ) 
+        if ( d != v )
+          {
+            vo.dst_wht[d] = 1;
+            if ( force_undirected ) mgraph[d].dst_wht[v] = 1;
+          }
       vo.deg_orig = vo.deg = vo.dst_wht.size();
       n_edges += vo.deg;
       vo.leaf_node = Tree_Node(v);
