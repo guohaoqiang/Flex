@@ -2844,7 +2844,8 @@ resCheck(float* h_gold, float* h_res, const Mat& mat, Perfs& perfRes)
 
     for (int r=0; r<m; ++r){
 
-        const int row_nnz = mat.row_nnz_get(r);
+        const auto& rp = mat.dl.dl_original->rowPtr;
+        const int row_nnz = rp[r+1] - rp[r];
         const double tol = numeric_limits<float>::epsilon() * row_nnz * 4;
         //
         // The tolerance above is for partial products that are about
