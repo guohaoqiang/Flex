@@ -4,6 +4,8 @@
 
 #include <ranges>
 
+constexpr bool opt_debug = false;
+
 DataLoader::DataLoader(const std::string& data_path, const int di)
   :dl_original(this),dim(di){
     std::string data_name = data_path.substr(data_path.find_last_of("/")+1);
@@ -41,7 +43,7 @@ DataLoader::DataLoader(const std::string& data_path, const int di)
         std::getline(fin,line);
         std::stringstream ss3(line);
         while(std::getline(ss3,word,',')){
-            vals.push_back(std::stof(word));        
+            vals.push_back( opt_debug ? 1 : std::stof(word) );
         }
         fin.close(); 
     }
@@ -167,11 +169,11 @@ DataLoader::cuda_alloc_cpy()
     if (vertex_order_abbr == "OVO"){
         for (int i=0; i<n; ++i){
             for (int j=0; j<dim; ++j){
-                //unsigned int temp_v = (rand()<<16)|rand();
-                //temp_v = (temp_v&0x7fffff) | 0x40000000; 
-                //cpuX.push_back( *((float*)&temp_v) - 3.0f );
+              if ( opt_debug )
+                cpuX.push_back(1);
+              else
                 cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
-                //cpuX.push_back(1);
+
                 //cpuX.push_back(i*dim+j);
             }
         }
