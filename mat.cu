@@ -378,7 +378,7 @@ void Mat::csr2seg_Cmajor(int ridx){
     for ( auto c: views::iota(rowPtr[rowStart],rowPtr[rowEnd]) )
       occ_cols[colIdx[c]]++;
     const auto last_col = occ_cols.rbegin()->first;
-
+    float sum = 0;
     // collect segs in the panel
     for ( auto [j,ncol]: occ_cols ) {
         
@@ -391,8 +391,13 @@ void Mat::csr2seg_Cmajor(int ridx){
                 segNzRowIdx.push_back(i-rowStart);
                 //segNzRowIdx.push_back(i);
                 segNzColIdx.push_back(j);
-                segNzRCIdx.push_back(i-rowStart);
-                
+
+                if ( false && i==0 ){
+                    sum += vals[c];
+                    printf("r = %d, c = %d, v = %f, sum = %f\n", i, j, vals[c], sum);
+                }
+
+                segNzRCIdx.push_back(i-rowStart); 
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
                 cOffset[i-rowStart]++;

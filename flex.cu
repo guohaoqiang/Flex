@@ -2809,6 +2809,110 @@ void flexspmm_cuda_w_pre_v23(){
         timing_end();
 }
 
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_wo_pre_w_vec_v24(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();    
+    int warp_id = threadIdx.y;
+    timing_start(); 
+    
+    extern __shared__ int sh[];
+    // |--------|-------|-------|---|--------|-------|-------|---|--------|-------|-------|---|
+    // |  32,r  |  32,c |  32,v | 1 |  32,r  |  32,c |  32,v | 1 |  32,r  |  32,c |  32,v | 1 |   
+    // |           wp0              |          wp1               |           wp2              |
+      
+    int     *rIdx = sh;
+    int     *cIdx = &sh[ (blockDim.y<<5) ]; // imply blockDim.x==32
+    float    *val = (float *)&sh[ (blockDim.y<<6) ];
+    int  *seg_idx = &sh[ (blockDim.y<<5)*3 + warp_id ];
+    
+    // since blockDim.x==32, shmem_offset is the offset of a warp
+    int shmem_offset = ( threadIdx.y<<5 ); 
+
+    int gold_row_id[tm];
+    int nsi = sm_id;
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];     
+    
+    while ( true ) { // over tile segments in a bucket
+                
+        int seg_idx_0 = threadIdx.x ? 0 : atomicAdd(&md.next_seg_dev[nsi],1);
+        
+        __syncwarp();
+        if ( threadIdx.x == 0) seg_idx[0] = seg_idx_0;
+        __syncwarp();
+        
+        if ( nsi < md.sms && seg_idx[0] >= tail_seg_idx ){ nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[0] >= md.n_segs ) break;
+
+
+        int seg_cur_id = md.segPtr_dev[ seg_idx[0] ]; 
+        int seg_nxt_id = md.segPtr_dev[ seg_idx[0]+1 ];
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[ seg_idx[0]*tm+i ];
+        }
+     
+        // note: blockDim.x = 32
+        for ( int cid = 0; cid<md.k; cid+=32 ){
+            float res[tm]{};
+            for ( int nz_i=seg_cur_id; nz_i<seg_nxt_id; nz_i += 32 ){    
+                // load non-zeros from glb to sh
+                if ( nz_i+threadIdx.x < seg_nxt_id ){
+                    int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[ nz_i+threadIdx.x ];
+                    rIdx[ shmem_offset+threadIdx.x ] = rc.x;
+                    cIdx[ shmem_offset+threadIdx.x ] = rc.y * md.k;
+                    val[ shmem_offset+threadIdx.x ] = md.vals_dev[ nz_i+threadIdx.x ];
+                }
+                __syncwarp();
+
+                if ( cid+threadIdx.x<md.k ){
+                    // use loaded non-zeros
+                    for ( int z=0; z<32 && (nz_i+z)<seg_nxt_id; z++ ){  
+                        int ridx = rIdx[ shmem_offset + z ];
+                        float nz_val = val[ shmem_offset + z ];
+                        int b_col = cIdx[ shmem_offset + z ] + cid + threadIdx.x;
+
+                        //if ( false && threadIdx.x==0 && threadIdx.y==0 && (gold_row_id[ridx]&0x7fffffff)==0 ){
+                        //    printf("%d of %s: c = %d, v = %f\n",__LINE__,__FILE__,
+                        //            cIdx[ shmem_offset + z ]/md.k,nz_val);
+                        //}
+                        res[ridx] += md.shadow_b_dev[ b_col ] * nz_val;  
+                    }
+                }
+                __syncwarp();
+            }
+            
+            if ( cid+threadIdx.x<md.k ){
+                // store C tiles back to global mem
+                #pragma unroll
+                for ( int c=0; c<tm; ++c ){
+                    int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                     
+                    if ( actual_row<md.m ){
+                        int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                        int addr = actual_row*md.k;
+                        if ( atomicORnot>>31 ){
+                            atomicAdd( &md.mat_c_dev[ addr + cid + threadIdx.x ], res[c] );
+                        }else{
+                            md.mat_c_dev[ addr + cid + threadIdx.x ] = res[c];
+                        }
+                        //if ( threadIdx.x==0 && threadIdx.y==0 && actual_row==0 ){
+                        //    printf("%d of %s: c[%d][%d] = %f\n",__LINE__,__FILE__,
+                        //            actual_row,cid,md.mat_c_dev[ addr + cid ]);
+                        //}
+                    }
+                }
+            }
+        } // end C column 
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
 GPU_Info
 print_gpu_and_kernel_info()
 {
@@ -3198,14 +3302,15 @@ void run(DataLoader& input_vo){
 
     #define EXAMINE_KERNEL(kb,k,sidx,nbx,nby,nt) \
         EXAMINE_KERNEL1(kb,k,sidx,input_vo,nbx,nby,nt);\
-        EXAMINE_KERNEL1(kb,k,sidx,input_gorder,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_rabbit,nbx,nby,nt);\
+        EXAMINE_KERNEL1(kb,k,sidx,input_gorder,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_dfs,nbx,nby,nt);
     //EXAMINE_KERNEL1(k,sidx,input_deg);EXAMINE_KERNEL1(k,sidx,input_rcm);
     
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\
     {const int idx = kernels.size(); \
-        EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,NNZ_LIMIT,4>), sidx, nbx, nby, nt); }
+        EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,2,4>), sidx, nbx, nby, nt); }
+        //EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,NNZ_LIMIT,4>), sidx, nbx, nby, nt); }
 // NBX,NBY,NT are useless currently
 #define NBX 1
 #define NBY 1
@@ -3231,12 +3336,13 @@ void run(DataLoader& input_vo){
 // v15: single buffering, rows-based seg allocation, vec r and c of sparse input  
 // v16: single buffering, varying kernels with seg size, vec r and c of sparse input 
 // v17: single buffering, a block process contiguous layout segs, vec r and c of sparse input 
-//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v17
+// v24: single buffering, sm-based seg allocation, vec r and c of sparse input, warp-seg maping 
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v24
 
 // v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
-#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -3454,6 +3560,10 @@ void run(DataLoader& input_vo){
         for ( const uint gridx: grid_sizes )
           {
             const dim3 grid_sz = { gridx, 1, 1 };
+            //const dim3 block_sz = { threads, 0, 1 };
+            
+            const dim3 block_sz = { 32, 2, 1 };
+            
             const int num_blocks = grid_sz.x * grid_sz.y * grid_sz.z;
             const int grid_n_wps = num_blocks * block_n_wps;
 
@@ -3473,7 +3583,10 @@ void run(DataLoader& input_vo){
             //
             CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
-            KPtr(ki->func_ptr)<<<grid_sz,threads>>>();
+            //KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+            KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*2*(4+4+4)+2>>>();
+            
+            //printf("%d of %s------\n",__LINE__,__FILE__);
             //
             // Until NPerf_metrics_off is fixed event timing won't work.
 
@@ -3494,7 +3607,8 @@ void run(DataLoader& input_vo){
             CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) ); 
             for ( NPerf_data_reset(); NPerf_need_run_get(); ){
-                KPtr(ki->func_ptr)<<<grid_sz,threads>>>();
+                //KPtr(ki->func_ptr)<<<grid_sz,block_sz,>>>();
+                KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*2*(4+4+4)+2>>>();
             }
             
 
