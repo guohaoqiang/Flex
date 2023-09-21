@@ -2527,20 +2527,24 @@ void flexspmm_cuda_wo_pre_v22(){
     const Mat_POD& md = mat_dev;
     uint32_t sm_id = smid_get();    
     uint32_t lane_id = threadIdx.x%32;
-    int swch = 1;
     timing_start(); 
     
     int gold_row_id[tm];
-    
-    __shared__ int seg_idx;
-    if (threadIdx.x==0){
-        seg_idx = atomicAdd(&md.next_seg_dev[sm_id],1);
-    }
-    __syncthreads();
-    int tail_seg_idx = md.grouped_tailSeg_dev[sm_id];     
-    while ( (( (seg_idx>=0) && (seg_idx < tail_seg_idx) )  ||  
-            (seg_idx >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx < md.n_segs)  ){ // over tile segments in a bucket
+   
+    int nsi = sm_id; 
+    const int tail_seg_idx = md.grouped_tailSeg_dev[ nsi ];     
+    while ( true ){ // over tile segments in a bucket
                    
+        int seg_idx_0 = threadIdx.x? 0 : atomicAdd(&md.next_seg_dev[ nsi ],1);
+        __shared__ int seg_idx;
+        
+        __syncthreads();
+        if ( threadIdx.x==0 ) seg_idx = seg_idx_0;
+        __syncthreads();
+
+        if ( nsi < md.sms && seg_idx >= tail_seg_idx ){ nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx >= md.n_segs ) break;
+
         int seg_cur_id = md.segPtr_dev[ seg_idx ]; 
         int nnz_cur_seg = md.segPtr_dev[ seg_idx+1 ] - seg_cur_id;
         
@@ -2623,18 +2627,6 @@ void flexspmm_cuda_wo_pre_v22(){
          
         }// end C colums
         
-        if (threadIdx.x==0){ 
-            if (swch)
-                seg_idx = atomicAdd(&md.next_seg_dev[sm_id],1);
-            
-            // if segs in its own bucket run out  
-            // steal segs from the last bucket
-            if (seg_idx>=tail_seg_idx){
-                swch = 0;
-                seg_idx = atomicAdd(&md.next_seg_dev[md.sms],1);
-            }
-        }
-        __syncthreads();
     } // end tile-segs loops
     
         timing_end();
@@ -2649,7 +2641,7 @@ void flexspmm_cuda_w_pre_v23(){
 
     const Mat_POD& md = mat_dev;
     uint32_t sm_id = smid_get();    
-    int swch = 1;
+    int nsi = sm_id;
     timing_start(); 
     
     int gold_row_id[tm];
@@ -2667,7 +2659,7 @@ void flexspmm_cuda_w_pre_v23(){
 
     //if (threadIdx.x==0){
     if (tb.thread_rank()==0){
-        seg_idx[0] = atomicAdd(&md.next_seg_dev[sm_id],1);
+        seg_idx[0] = atomicAdd(&md.next_seg_dev[ nsi ],1);
     }
     //tb.sync();
     cg::wait(tb);
@@ -2679,7 +2671,6 @@ void flexspmm_cuda_w_pre_v23(){
     int nnz_nxt_seg = 0;
     int seg_nxt_id = -1;
     
-    if ( ( ((seg_idx[0]>=0) && (seg_idx[0] < tail_seg_idx)) || (seg_idx[0] >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx[0] < md.n_segs) ){
         if ( use_memcpy_asy ){
             cg::memcpy_async(tb, rsm1, md.segNzRowIdx_dev + seg_cur_id, nnz_cur_seg*sizeof(int));
             cg::memcpy_async(tb, csm1, md.segNzColIdx_dev + seg_cur_id, nnz_cur_seg*sizeof(int));
@@ -2691,35 +2682,27 @@ void flexspmm_cuda_w_pre_v23(){
                 vsm1[ i-seg_cur_id ] = md.vals_dev[ i ];
             }
         }
-    }
     //__syncthreads();
     if ( !use_memcpy_asy ) cg::wait(tb);
     
-    while ( (( (seg_idx[0]>=0) && (seg_idx[0] < tail_seg_idx) )  ||  
-            (seg_idx[0] >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx[0] < md.n_segs)  ){ // over tile segments in a bucket
+    while ( true  ){ // over tile segments in a bucket
                     
+        int seg_idx_0 = tb.thread_rank()? 0 : atomicAdd(&md.next_seg_dev[ nsi ],1);
+        
+        cg::wait(tb);
+        if ( tb.thread_rank()==0 ) seg_idx[0] = seg_idx_0;
+        cg::wait(tb);
+
+        if ( nsi < md.sms && seg_idx[0] >= tail_seg_idx ){ nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[0] >= md.n_segs ) break;
+        
+
         #pragma unroll
         for (int i=0; i<tm; ++i){
             gold_row_id[i] = md.segVoMap_dev[seg_idx[0]*tm+i];
         }
         
-        //if (threadIdx.x==0){ 
-        if (tb.thread_rank()==0){
-            if (swch){
-                seg_idx[0] = atomicAdd(&md.next_seg_dev[sm_id],1);
-            }
-            // if segs in its own bucket run out  
-            // steal segs from the last bucket
-            if (seg_idx[0]>=tail_seg_idx){
-                swch = 0;
-                seg_idx[0] = atomicAdd(&md.next_seg_dev[md.sms],1);
-            }
-        }
-        //tb.sync();
-        cg::wait(tb);
-        //__syncthreads();
         
-        if ( (( (seg_idx[0]>=0) && (seg_idx[0] < tail_seg_idx) )  ||  (seg_idx[0] >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx[0] < md.n_segs)  ){
 
             seg_nxt_id = md.segPtr_dev[ seg_idx[0] ]; 
             nnz_nxt_seg = md.segPtr_dev[ seg_idx[0]+1 ] - seg_nxt_id;
@@ -2735,9 +2718,7 @@ void flexspmm_cuda_w_pre_v23(){
                     vsm2[ i-seg_nxt_id ] = md.vals_dev[ i ];
                 }
             }
-        }
         
-        //cg::wait(tb); 
         if ( use_memcpy_asy ){
             cg::wait_prior<3>(tb); 
         } 
@@ -2869,10 +2850,6 @@ void flexspmm_cuda_wo_pre_w_vec_v24(){
                         float nz_val = val[ shmem_offset + z ];
                         int b_col = cIdx[ shmem_offset + z ] + cid + threadIdx.x;
 
-                        //if ( false && threadIdx.x==0 && threadIdx.y==0 && (gold_row_id[ridx]&0x7fffffff)==0 ){
-                        //    printf("%d of %s: c = %d, v = %f\n",__LINE__,__FILE__,
-                        //            cIdx[ shmem_offset + z ]/md.k,nz_val);
-                        //}
                         res[ridx] += md.shadow_b_dev[ b_col ] * nz_val;  
                     }
                 }
@@ -2893,10 +2870,6 @@ void flexspmm_cuda_wo_pre_w_vec_v24(){
                         }else{
                             md.mat_c_dev[ addr + cid + threadIdx.x ] = res[c];
                         }
-                        //if ( threadIdx.x==0 && threadIdx.y==0 && actual_row==0 ){
-                        //    printf("%d of %s: c[%d][%d] = %f\n",__LINE__,__FILE__,
-                        //            actual_row,cid,md.mat_c_dev[ addr + cid ]);
-                        //}
                     }
                 }
             }
@@ -3303,8 +3276,7 @@ void run(DataLoader& input_vo){
     
     #define SPECIFY_KERNEL(k,sidx,nbx,nby,nt)\
     {const int idx = kernels.size(); \
-        EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,2,4>), sidx, nbx, nby, nt); }
-        //EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,NNZ_LIMIT,4>), sidx, nbx, nby, nt); }
+        EXAMINE_KERNEL(k,(k<tileConfs[sidx].tm,NNZ_LIMIT,4>), sidx, nbx, nby, nt); }
 // NBX,NBY,NT are useless currently
 #define NBX 1
 #define NBY 1
@@ -3331,12 +3303,12 @@ void run(DataLoader& input_vo){
 // v16: single buffering, varying kernels with seg size, vec r and c of sparse input 
 // v17: single buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v24: single buffering, sm-based seg allocation, vec r and c of sparse input, warp-seg maping 
-#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v24
+//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v24
 
 // v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
-//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -3554,9 +3526,9 @@ void run(DataLoader& input_vo){
         for ( const uint gridx: grid_sizes )
           {
             const dim3 grid_sz = { gridx, 1, 1 };
-            //const dim3 block_sz = { threads, 0, 1 };
-            
-            const dim3 block_sz = { 32, 2, 1 };
+            const dim3 block_sz = { 128, 1, 1 };
+            //uint warps = mat.k<128 ? 2 : 4; // v24 
+            //const dim3 block_sz = { 32, warps, 1 }; // v24
             
             const int num_blocks = grid_sz.x * grid_sz.y * grid_sz.z;
             const int grid_n_wps = num_blocks * block_n_wps;
@@ -3577,8 +3549,8 @@ void run(DataLoader& input_vo){
             //
             CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
-            //KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
-            KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*2*(4+4+4)+2>>>();
+            KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+            //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); //v24
             
             //printf("%d of %s------\n",__LINE__,__FILE__);
             //
@@ -3601,8 +3573,8 @@ void run(DataLoader& input_vo){
             CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) ); 
             for ( NPerf_data_reset(); NPerf_need_run_get(); ){
-                //KPtr(ki->func_ptr)<<<grid_sz,block_sz,>>>();
-                KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*2*(4+4+4)+2>>>();
+                KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+                //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); // v24
             }
             
 
