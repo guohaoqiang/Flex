@@ -319,7 +319,7 @@ void Mat::csr2tile(){
                 seg_tail_sm++;
             }
             validate_nnz += nz;
-            grouped_tailSeg.push_back( seg_tail_sm );
+            grouped_tailSeg.push_back( min(n_segs,seg_tail_sm) );
             seg_head_sm = seg_tail_sm;
         }
         
