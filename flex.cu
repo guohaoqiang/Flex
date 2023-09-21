@@ -2452,20 +2452,25 @@ void flexspmm_cuda_wo_pre_w_vec_v21(){
 
     const Mat_POD& md = mat_dev;
     uint32_t sm_id = smid_get();    
-    int swch = 1;
     timing_start(); 
     
     int gold_row_id[tm];
     
-    __shared__ int seg_idx;
-    if (threadIdx.x==0){
-        seg_idx = atomicAdd(&md.next_seg_dev[sm_id],1);
-    }
-    __syncthreads();
-    int tail_seg_idx = md.grouped_tailSeg_dev[sm_id];     
-    while ( (( (seg_idx>=0) && (seg_idx < tail_seg_idx) )  ||  
-            (seg_idx >= md.grouped_tailSeg_dev[md.sms-1])) && (seg_idx < md.n_segs)  ){ // over tile segments in a bucket
-                   
+    int nsi = sm_id;
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+      int seg_idx_0 = threadIdx.x ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+      __shared__ int seg_idx;
+
+      __syncthreads();
+      if ( threadIdx.x == 0 ) seg_idx = seg_idx_0;
+      __syncthreads();
+
+      if ( nsi < md.sms && seg_idx >= tail_seg_idx ) { nsi = md.sms; continue; }
+      if ( nsi == md.sms && seg_idx >= md.n_segs ) break;
+
         int seg_cur_id = md.segPtr_dev[ seg_idx ]; 
         int nnz_cur_seg = md.segPtr_dev[ seg_idx+1 ] - seg_cur_id;
         
@@ -2507,19 +2512,7 @@ void flexspmm_cuda_wo_pre_w_vec_v21(){
             }
          
         }// end C colums
-        
-        if (threadIdx.x==0){ 
-            if (swch)
-                seg_idx = atomicAdd(&md.next_seg_dev[sm_id],1);
-            
-            // if segs in its own bucket run out  
-            // steal segs from the last bucket
-            if (seg_idx>=tail_seg_idx){
-                swch = 0;
-                seg_idx = atomicAdd(&md.next_seg_dev[md.sms],1);
-            }
-        }
-        __syncthreads();
+
     } // end tile-segs loops
     
         timing_end();
@@ -2947,14 +2940,16 @@ resCheck(float* h_gold, float* h_res, const Mat& mat, Perfs& perfRes)
     const int m = mat.m;
     const int n = mat.k;
     // verify results
-    int count = 0;
+    int count = 0, err_show_remaining = 20;
     int nz = 0;
     double max_err = 0;
     int me_nnz = 0;
+    int last_err_row = -1;
 
     for (int r=0; r<m; ++r){
 
-        const int row_nnz = mat.row_nnz_get(r);
+        const auto& rp = mat.dl.dl_original->rowPtr;
+        const int row_nnz = rp[r+1] - rp[r];
         const double tol = numeric_limits<float>::epsilon() * row_nnz * 4;
         //
         // The tolerance above is for partial products that are about
@@ -2971,21 +2966,20 @@ resCheck(float* h_gold, float* h_res, const Mat& mat, Perfs& perfRes)
           if ( set_max(max_err,err) ) me_nnz = row_nnz;
           if ( err > tol ) {
             count++;
-            if ( false && count == 1 )
-              cout << "Verify result accuracy ("
-                   << to_string(tm) << "X" << to_string(tn)
-                   << ").  Errors:" << endl;
-            if ( false && count < 5 )
-              printf(" ref[%d][%d]:  %f!=%f (correct)"
-                     "  %d nnzs, dif %g, tol %g\n",
-                     r, c, h_res[idx], h_gold[idx],
-                     row_nnz, err, tol);
+            if ( r != last_err_row && err_show_remaining-- > 0 )
+              {
+                last_err_row = r;
+                printf(" ref[%d][%d]:  %f!=%f (correct)"
+                       "  %d nnzs, dif %g, tol %g\n",
+                       r, c, h_res[idx], h_gold[idx],
+                       row_nnz, err, tol);
+              }
           }
         }
     }
 
     perfRes.flex_spmm_errors.push_back(count);
-    if (false && count>0)
+    if ( count )
       {
         cout <<"Kernel ("<< to_string(tm) << "X" << to_string(tn)
              << ") errs: " << count;
@@ -3947,7 +3941,6 @@ void run(DataLoader& input_vo){
               ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
                 cudaMemcpyDeviceToHost);
             resCheck( input_vo.h_ref_c.data(), h_res_c, spMats[id], perfRes );
-            table.entry("errs(%)", "%4f", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
             fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
 
             float t = elap_t*(1e-3);

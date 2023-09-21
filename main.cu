@@ -12,6 +12,12 @@ int main(int argc, char *argv[])
     DataLoader data(argv[1], atoi(argv[2]));
     std::cout<<"Graph name: "<<data.graph_name<<std::endl;
     std::cout<<"A: "<<data.n<<"*"<<data.n<<"  X: "<<data.n<<"*"<<data.dim<<"   W: "<<data.dim<<"*"<<data.c<<std::endl;
+    printf("Avg degree: %.1f   %s,  n one-way edges %zd, asymmetric %zd\n",
+           double(data.nnz)/data.n,
+           data.is_directed ? "Directed" : "Undirected",
+           data.n_edges_one_way, data.n_edges_asymmetric );
+    printf("Nodes zero-deg-in %d, zero-deg-out %d, zero-deg %d\n",
+           data.n_nodes_z_in, data.n_nodes_z_out, data.n_nodes_z_deg);
     std::cout<<"NNZ of A: "<<data.nnz<<std::endl;
 #ifdef AXW
     // AXW test is out of use currently when perform spmm
