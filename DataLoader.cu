@@ -169,12 +169,11 @@ DataLoader::cuda_alloc_cpy()
     if (vertex_order_abbr == "OVO"){
         for (int i=0; i<n; ++i){
             for (int j=0; j<dim; ++j){
+
               if ( opt_debug )
                 cpuX.push_back(1);
               else
                 cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
-
-                //cpuX.push_back(i*dim+j);
             }
         }
     }
