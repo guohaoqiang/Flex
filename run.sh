@@ -1,5 +1,5 @@
 #!/bin/bash
-k=64
+k=128
 ./flex ./data/pubmed.csv $k
 #./flex ./data/flickr.csv $k
 #./flex ./data/reddit.csv $k
