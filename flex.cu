@@ -3294,8 +3294,7 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_vec4_v11
 
 // v12: double buffering, rows-based seg allocation, w/o vec 
-// v23: double buffering, sm-based seg allocation, w/o vec 
-//#define flex_kernel flexspmm_cuda_w_pre_v12
+// (to be fixed) v23: double buffering, sm-based seg allocation, w/o vec 
 //#define flex_kernel flexspmm_cuda_w_pre_v23
 
 
@@ -3832,6 +3831,13 @@ void run(DataLoader& input_vo){
                   / n_madd );
 
               table.header_span_start("L1←L2");
+
+              // nD = 4/u + 12/k + (2+tm) * #segs * 4 / #nz
+              float nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
+              float u = 4.0 / (nD - 12.0/mat.k - (2+mat.tm)*mat.n_segs*4.0/mat.nnz);
+              table.entry( "expBs", "%5.2f",u );
+              fprintf(tile_nperf, "%5.2f,",u);
+
               table.entry
                 ( "Bytes", "%5.2f",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
@@ -3905,7 +3911,7 @@ void run(DataLoader& input_vo){
               if ( true ) {
                   table.header_span( "FP Thpt", 1);
                   table.entry( "GFLOP/s", "%9.1f", 1e-9 * n_madd / et_seconds );
-                  fprintf(tile_nperf, "%9.1f,", 2 * 1e-9 * n_madd / et_seconds );
+                  fprintf(tile_nperf, "%9.1f\n", 2 * 1e-9 * n_madd / et_seconds );
                   table.header_span_end();
               }
             // transfer data to host
@@ -3913,7 +3919,7 @@ void run(DataLoader& input_vo){
               ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
                 cudaMemcpyDeviceToHost);
             resCheck( input_vo.h_ref_c.data(), h_res_c, spMats[id], perfRes );
-            fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
+            //fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
 
             float t = elap_t*(1e-3);
             perfRes.flex_spmm_time.push_back(t);

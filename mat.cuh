@@ -11,7 +11,7 @@
 #include "common.h"
 #include "DataLoader.cuh"
 #define DEBUG
-#define NNZ_LIMIT 64
+#define NNZ_LIMIT 128
 using namespace std;
 class Mat_POD{
     public:
