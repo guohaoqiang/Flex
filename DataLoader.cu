@@ -4,7 +4,7 @@
 
 #include <ranges>
 
-constexpr bool opt_debug = false;
+constexpr bool opt_debug = true;
 
 DataLoader::DataLoader(const std::string& data_path, const int di)
   :dl_original(this),dim(di){
