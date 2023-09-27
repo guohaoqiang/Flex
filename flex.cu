@@ -2674,7 +2674,7 @@ void flexspmm_cuda_w_pre_v23(){
         tail_seg_idx = md.grouped_tailSeg_dev[ nsi ];     
     }
     cg::wait(tb);
-    if ( nsi == md.sms && seg_idx[0] >= md.n_segs ) return;
+    if ( nsi == md.sms && seg_idx[0] >= md.n_segs ) { timing_end(); return; }
     
     int seg_cur_id = md.segPtr_dev[ seg_idx[0] ]; 
     int nnz_cur_seg = md.segPtr_dev[ seg_idx[0]+1 ] - seg_cur_id;
