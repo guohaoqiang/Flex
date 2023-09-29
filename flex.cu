@@ -4111,9 +4111,10 @@ void run(DataLoader& input_vo){
 
               table.header_span_start("L1←L2");
 
-              // nD = 4/u + 12/k + (2+tm) * #segs * 4 / #nz
-              float nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
-              float u = 4.0 / (nD - 12.0/mat.k - (2+mat.tm)*mat.n_segs*4.0/mat.nnz);
+              // nD = 4/u + 12/k + (2+tm) * #segs * 4 / (k * #nz)
+              // nD = 4/u + 12/k + (2+tm) * 4 / (#nz * k / #segs )
+              double nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
+              double u = 4.0 / ( nD - 12.0/mat.k - (2+mat.tm)*mat.n_segs*4.0 / (mat.nnz*mat.k) );
               table.entry( "expBs", "%5.2f",u );
               fprintf(tile_nperf, "%5.2f,",u);
 
