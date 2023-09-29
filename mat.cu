@@ -277,6 +277,7 @@ void Mat::sortSegs(){
 }
 void Mat::csr2tile(){
 	
+    bool print_bucket = false;
 	int tileRows = (m+tm-1)/tm;
 	for (int i=0; i<tileRows; ++i){
 		//csr2flex_Rmajor(i);
@@ -285,14 +286,13 @@ void Mat::csr2tile(){
         csr2seg_Cmajor(i);
 	} 
     n_segs = segPtr.size()-1;
-    
+    if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
     bool seg_sort = false;
     if (seg_sort) {
         //permute_segs();
         sortSegs();
     }
     
-
         int device_id;
         cudaDeviceProp prop;
         cudaGetDevice( &device_id );
@@ -314,12 +314,14 @@ void Mat::csr2tile(){
             int nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
             
             seg_tail_sm = seg_head_sm + 1;
-            while ( seg_tail_sm < n_segs && nz<(int)(0.98*wkload) ){
+            while ( seg_tail_sm < n_segs && nz<(int)(0.95*wkload) ){
                 nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
                 seg_tail_sm++;
             }
             validate_nnz += nz;
             grouped_tailSeg.push_back( min(n_segs,seg_tail_sm) );
+            if (print_bucket) printf("%d of %s, %d#sm: start = %d, end = %d\n", 
+                    __LINE__,__FILE__, i,seg_head_sm,grouped_tailSeg.back());
             seg_head_sm = seg_tail_sm;
         }
         
@@ -327,6 +329,8 @@ void Mat::csr2tile(){
         // if seg_head_sm==n_segs, then n_segs==seg_head_sm
         next_seg.push_back( seg_head_sm );
         grouped_tailSeg.push_back( n_segs );
+        if (print_bucket) printf("%d of %s, %d#sm: start = %d, end = %d\n", 
+                    __LINE__,__FILE__, n_sm, seg_head_sm,grouped_tailSeg.back());
         validate_nnz += segPtr[n_segs]-segPtr[seg_head_sm];
         assert( validate_nnz==segPtr.back() );
         assert( grouped_tailSeg.size()==n_sm+1 );
@@ -394,6 +398,12 @@ void Mat::csr2seg_Cmajor(int ridx){
                 //segNzRowIdx.push_back(i);
                 segNzColIdx.push_back(j);
 
+                if (false){
+                    if (i==903){
+                        printf("%d of %s: col = %d, v = %f\n",__LINE__,__FILE__,
+                                j, vals[c]);
+                    } 
+                }
                 segNzRCIdx.push_back(i-rowStart); 
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
