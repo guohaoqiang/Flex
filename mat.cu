@@ -180,7 +180,7 @@ int Mat::checkSim(vector<int>& a, vector<int>& b){
 }
 void Mat::sortSegs(){
 
-    int insular = 0;
+    vector<int> insular;
     // construct graph
     // { idx, col overlaps } min heap, sort by col overlaps
     // enable the max col overlap be on the top of the stack when DFS
@@ -209,14 +209,14 @@ void Mat::sortSegs(){
               }
             }
         if ( g[i].empty() ) {
-          insular++;
+          insular.push_back(i);
           g[i].push( {i,0} );
         }
       }
 
-    if ( insular>0 ){
-        printf("insular segs = %d\n",insular);
-        assert( insular==0 );
+    if ( false && insular.size()>0 ){
+        printf("insular segs = %d\n",(int)insular.size());
+        //assert( insular.size()==0 );
     }
 	std::vector<unsigned int> segPtr1(1,0);
 	std::vector<unsigned int> segNzRCIdx1;
@@ -261,6 +261,24 @@ void Mat::sortSegs(){
         }            
     }
 
+    for (int node:insular){
+    
+        int seg_nnz = segPtr[node+1] - segPtr[node];
+        for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
+            segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRowIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+            segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+            
+            newVals1.push_back(newVals[i]); 
+        } 
+        segPtr1.push_back(segPtr1.back()+seg_nnz);
+        for (int i=0; i<tm; ++i){
+            segVoMap1.push_back(segVoMap[node*tm+i]);
+        }
+       
+    }
+
 	assert( segPtr.size()==segPtr1.size() );
 	assert( segNzRCIdx.size()==segNzRCIdx1.size() );
 	assert( segNzRowIdx.size()==segNzRowIdx1.size() );
@@ -287,7 +305,7 @@ void Mat::csr2tile(){
 	} 
     n_segs = segPtr.size()-1;
     if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
-    bool seg_sort = false;
+    bool seg_sort = true;
     if (seg_sort) {
         //permute_segs();
         sortSegs();
