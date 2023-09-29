@@ -3581,12 +3581,12 @@ void run(DataLoader& input_vo){
 // v16: single buffering, varying kernels with seg size, vec r and c of sparse input 
 // v17: single buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v24: single buffering, sm-based seg allocation, vec r and c of sparse input, warp-seg maping 
-#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v24
+//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v24
 
 // v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
-//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -3804,9 +3804,9 @@ void run(DataLoader& input_vo){
         for ( const uint gridx: grid_sizes )
           {
             const dim3 grid_sz = { gridx, 1, 1 };
-            //const dim3 block_sz = { 128, 1, 1 };
-            uint warps = mat.k<128 ? 2 : 4; // v24 
-            const dim3 block_sz = { 32, warps, 1 }; // v24
+            const dim3 block_sz = { 128, 1, 1 };
+            //uint warps = mat.k<128 ? 2 : 4; // v24 
+            //const dim3 block_sz = { 32, warps, 1 }; // v24
             
             const int num_blocks = grid_sz.x * grid_sz.y * grid_sz.z;
             const int grid_n_wps = num_blocks * block_n_wps;
@@ -3827,8 +3827,8 @@ void run(DataLoader& input_vo){
             //
             CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
-            //KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
-            KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); //v24
+            KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+            //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); //v24
             
             //printf("%d of %s------\n",__LINE__,__FILE__);
             //
@@ -3851,8 +3851,8 @@ void run(DataLoader& input_vo){
             CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) ); 
             for ( NPerf_data_reset(); NPerf_need_run_get(); ){
-                //KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
-                KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); // v24
+                KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+                //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); // v24
             }
             
 
