@@ -398,12 +398,6 @@ void Mat::csr2seg_Cmajor(int ridx){
                 //segNzRowIdx.push_back(i);
                 segNzColIdx.push_back(j);
 
-                if (false){
-                    if (i==903){
-                        printf("%d of %s: col = %d, v = %f\n",__LINE__,__FILE__,
-                                j, vals[c]);
-                    } 
-                }
                 segNzRCIdx.push_back(i-rowStart); 
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
