@@ -112,6 +112,30 @@ DataLoader::DataLoader(const std::string& data_path, const int di)
     vo_mp.resize(m);
     std::iota(vo_mp.begin(), vo_mp.end(), 0);
     cuda_alloc_cpy();
+
+    if (false){
+        getDegDist();
+    }
+}
+
+void
+DataLoader::getDegDist(){
+    vector<int> deg(5,0);
+
+    for (int i=0; i<rowPtr.size()-1; ++i){
+        int nbs = rowPtr[i+1]-rowPtr[i];
+        if ( nbs<=8 )   deg[0]++;
+        else if ( nbs <=16 )  deg[1]++;
+        else if ( nbs <=32 )  deg[2]++;
+        else if ( nbs <=256 )  deg[3]++;
+        else  deg[4]++;
+    }
+
+    printf("( 0, 8]: %f\n",deg[0]*1.0/m);
+    printf("( 8, 16]: %f\n",deg[1]*1.0/m);
+    printf("( 16, 32]: %f\n",deg[2]*1.0/m);
+    printf("( 32, 256]: %f\n",deg[3]*1.0/m);
+    printf("( 256, +OO): %f\n",deg[4]*1.0/m);
 }
 
 void 

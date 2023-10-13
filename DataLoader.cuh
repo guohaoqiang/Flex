@@ -40,6 +40,7 @@ public:
     bool compare();
     void print_data();
     void print4(int, bool);
+    void getDegDist();
     
     std::vector<float> cpuX; // n * dim
     std::vector<float> cpuW; // dim * c
