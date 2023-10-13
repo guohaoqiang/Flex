@@ -305,7 +305,7 @@ void Mat::csr2tile(){
 	} 
     n_segs = segPtr.size()-1;
     if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
-    bool seg_sort = true;
+    bool seg_sort = false;
     if (seg_sort) {
         //permute_segs();
         sortSegs();

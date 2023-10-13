@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#rm flex-tile-nperf.csv
-rm ge_spmm_roofline.csv
+rm flex-tile-nperf.csv
+#rm ge_spmm_roofline.csv
 
-k=32
+k=96
 ./flex ./data/pubmed.csv $k
 ./flex ./data/flickr.csv $k
 ./flex ./data/reddit.csv $k

@@ -3375,6 +3375,7 @@ void run_ge_spmm(DataLoader& input_vo){
     // Compute number of FP32 per chip.
     //
     const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
+    NPerf_metric_collect("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
    
     // the following 8 events are related L1 Cache access , each trans is 128 bytes
     NPerf_metric_collect("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"); // gld_trans                                                                            
@@ -3387,16 +3388,17 @@ void run_ge_spmm(DataLoader& input_vo){
     NPerf_metric_collect("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum"); // shared_store_trans
     
     // the following 4 events are related L2 Cache access , each trans is 32 bytes
-    NPerf_metric_collect("lts__t_sectors_op_read.sum"); // L2_read_trans
-    NPerf_metric_collect("lts__t_sectors_op_atom.sum");
-    NPerf_metric_collect("lts__t_sectors_op_red.sum");
-    NPerf_metric_collect("lts__t_sectors_op_write.sum"); // L2_write_trans
-     
+    //NPerf_metric_collect("lts__t_sectors_op_read.sum"); // L2_read_trans
+    //NPerf_metric_collect("lts__t_sectors_op_atom.sum");
+    //NPerf_metric_collect("lts__t_sectors_op_red.sum");
+    //NPerf_metric_collect("lts__t_sectors_op_write.sum"); // L2_write_trans
+    NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
+    NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
+
     // the following 2 events are related device mem access , each trans is 32 bytes
     NPerf_metric_collect("dram__sectors_read.sum");  // dram_read_trans
     NPerf_metric_collect("dram__sectors_write.sum");  // dram_write_bytes
    
-
     NPerf_metric_collect("smsp__sass_thread_inst_executed_op_fadd_pred_on.sum"); 
     NPerf_metric_collect("smsp__sass_thread_inst_executed_op_fmul_pred_on.sum"); 
     NPerf_metric_collect("smsp__sass_thread_inst_executed_op_ffma_pred_on.sum"); 
@@ -3555,6 +3557,10 @@ void run_ge_spmm(DataLoader& input_vo){
     table.entry( "Imb", "%3.0f", 100 * imbalance_penalty );
     fprintf(rl_nperf, "%3.0f,", 100 * imbalance_penalty );
     
+    double occ = NPerf_metric_value_get("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
+    table.entry( "occupy", "%5.2f", occ );
+    fprintf(rl_nperf, "%5.2f,", occ );
+    
     double gflops = input_vo.nnz * input_vo.dim * 2.0 * (1e-9) / et_seconds;
     //table.entry("GFlops", "%7.3f", gflops );
 
@@ -3566,48 +3572,52 @@ void run_ge_spmm(DataLoader& input_vo){
     fprintf(rl_nperf, "%7.3f,", flops*(1e-9)/et_seconds );
 
     //table.header_span_start("L1 (Bytes)");
-    double gld = 128*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum");
+    double gld = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum");
     //table.entry( "gld", "%7.1f",gld );
-    double gst = 128*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum");
+    double gst = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum");
     //table.entry( "gst", "%7.1f",gst );
-    double atm = 128*(NPerf_metric_value_get("l1tex__t_set_accesses_pipe_lsu_mem_global_op_atom.sum") + 
+    double atm = 32*(NPerf_metric_value_get("l1tex__t_set_accesses_pipe_lsu_mem_global_op_atom.sum") + 
                         NPerf_metric_value_get("l1tex__t_set_accesses_pipe_lsu_mem_global_op_red.sum"));
     //table.entry( "atomic", "%7.1f",atm );
-    double local_ld = 128*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum");
+    double local_ld = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum");
     //table.entry( "local_ld", "%7.1f",local_ld );
-    double local_st = 128*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum");
+    double local_st = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum");
     //table.entry( "local_st", "%7.1f", local_st);
-    double sh_ld = 128*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
+    double sh_ld = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
     //table.entry( "sh_ld", "%7.1f",sh_ld );
-    double sh_st = 128*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum");
+    double sh_st = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum");
     //table.entry( "sh_st", "%7.1f",sh_st );
     double l1_ai = flops / (gld + gst + atm + local_ld + local_st + sh_ld + sh_st);
-    table.entry( "L1 AI", "%7.1f",l1_ai);
-    fprintf(rl_nperf, "%7.1f,",l1_ai);
+    table.entry( "L1 AI", "%7.4f",l1_ai);
+    fprintf(rl_nperf, "%7.4f,",l1_ai);
     //table.header_span_end();
     
     //table.header_span_start("L2 (Bytes)"); 
-    double l2_rd = 32*NPerf_metric_value_get("lts__t_sectors_op_read.sum");
+    //double l2_rd = 32*NPerf_metric_value_get("lts__t_sectors_op_read.sum");
     //table.entry( "l2_rd", "%7.1f",l2_rd );
-    double l2_atm = 32*NPerf_metric_value_get("lts__t_sectors_op_atom.sum");
+    //double l2_atm = 32*NPerf_metric_value_get("lts__t_sectors_op_atom.sum");
     //table.entry( "l2_atm", "%7.1f",l2_atm );
-    double l2_red = 32*NPerf_metric_value_get("lts__t_sectors_op_red.sum");
+    //double l2_red = 32*NPerf_metric_value_get("lts__t_sectors_op_red.sum");
     //table.entry( "l2_red", "%7.1f",l2_red );
-    double l2_wr = 32*NPerf_metric_value_get("lts__t_sectors_op_write.sum");
+    //double l2_wr = 32*NPerf_metric_value_get("lts__t_sectors_op_write.sum");
+    double l2_wr = NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum");
+    double l2_rd = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum");
     //table.entry( "l2_wr", "%7.1f",l2_wr );
-    double l2_ai = flops / (l2_rd + l2_atm + l2_red + l2_wr);
-    table.entry( "L2 AI", "%7.1f",l2_ai);
-    fprintf(rl_nperf, "%7.1f\n",l2_ai);
+    //double l2_ai = flops / (l2_rd + l2_atm + l2_red + l2_wr);
+    double l2_ai = flops / (l2_rd + l2_wr);
+    table.entry( "L2 AI", "%7.4f",l2_ai);
+    fprintf(rl_nperf, "%7.4f,",l2_ai);
     //table.header_span_end();
     
     // bugs for dram to be fixed 
     //table.header_span_start("Glb (Bytes)"); 
     double dram_rd = 32*NPerf_metric_value_get("dram__sectors_read.sum");
-    //table.entry( "dram_rd", "%f",dram_rd );
+    table.entry( "dram_rd", "%f",dram_rd );
     double dram_wr = 32*NPerf_metric_value_get("dram__sectors_write.sum");
-    //table.entry( "dram_wr", "%f",dram_wr );
+    table.entry( "dram_wr", "%f",dram_wr );
     double dram_ai = flops / (dram_rd + dram_wr);
-    //table.entry( "dram AI", "%7.1f",dram_ai);
+    table.entry( "dram AI", "%7.4f",dram_ai);
+    fprintf(rl_nperf, "%7.4f\n",dram_ai);
     //table.header_span_end();
     
 
@@ -3621,7 +3631,7 @@ void run_ge_spmm(DataLoader& input_vo){
 }
 void run(DataLoader& input_vo){
 
-    if ( true ){
+    if ( false ){
         run_ge_spmm(input_vo);
         //run_split_k(input_vo);
         return ;
@@ -3652,7 +3662,38 @@ void run(DataLoader& input_vo){
     // Compute number of FP32 per chip.
     //
     const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
-    
+   
+    bool roofline = true; 
+    if ( roofline ){
+        NPerf_metric_collect("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
+  /****************************************** colect data for roofline ***************************************/
+        // the following 8 events are related L1 Cache access , each trans is 128 bytes
+        NPerf_metric_collect("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"); // gld_trans                                                                            
+        NPerf_metric_collect("l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum"); // gst_trans
+        NPerf_metric_collect("l1tex__t_set_accesses_pipe_lsu_mem_global_op_atom.sum"); // atomic_trans
+        NPerf_metric_collect("l1tex__t_set_accesses_pipe_lsu_mem_global_op_red.sum");  // atomic_trans
+        NPerf_metric_collect("l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum"); // local_load_trans
+        NPerf_metric_collect("l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum"); // local_store_trans
+        NPerf_metric_collect("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum"); // shared_load_trans
+        NPerf_metric_collect("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum"); // shared_store_trans
+        
+        // the following 4 events are related L2 Cache access , each trans is 32 bytes
+        //NPerf_metric_collect("lts__t_sectors_op_read.sum"); // L2_read_trans
+        //NPerf_metric_collect("lts__t_sectors_op_atom.sum");
+        //NPerf_metric_collect("lts__t_sectors_op_red.sum");
+        //NPerf_metric_collect("lts__t_sectors_op_write.sum"); // L2_write_trans
+        //NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
+        //NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
+         
+        // the following 2 events are related device mem access , each trans is 32 bytes
+        NPerf_metric_collect("dram__sectors_read.sum");  // dram_read_trans
+        NPerf_metric_collect("dram__sectors_write.sum");  // dram_write_bytes
+
+        NPerf_metric_collect("smsp__sass_thread_inst_executed_op_fadd_pred_on.sum"); 
+        NPerf_metric_collect("smsp__sass_thread_inst_executed_op_fmul_pred_on.sum"); 
+        NPerf_metric_collect("smsp__sass_thread_inst_executed_op_ffma_pred_on.sum"); 
+  /***********************************************************************************************************/
+    }
     NPerf_metric_collect("sm__cycles_elapsed.max");                                                                            
     NPerf_metric_collect("sm__inst_executed.sum");
     NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
@@ -3957,9 +3998,10 @@ void run(DataLoader& input_vo){
         if ( opt_vary_grid_size )
           for ( int n_blks = num_sm; n_blks < mat.n_segs; n_blks <<= 1 )
           {
-              grid_sizes.push_back( n_blks );
+              //grid_sizes.push_back( n_blks );
           }
-        grid_sizes.push_back( mat.n_segs );
+        //grid_sizes.push_back( mat.n_segs );
+        grid_sizes.push_back( num_sm*64 );
 
         // Allocate storage for timing data.
         //
@@ -4364,10 +4406,68 @@ void run(DataLoader& input_vo){
 
               if ( true ) {
                   table.header_span( "FP Thpt", 1);
-                  table.entry( "GFLOP/s", "%9.1f", 1e-9 * n_madd / et_seconds );
-                  fprintf(tile_nperf, "%9.1f\n", 2 * 1e-9 * n_madd / et_seconds );
+                  table.entry( "GFLOP/s", "%9.2f", 1e-9 * n_madd / et_seconds );
+                  if (roofline) fprintf(tile_nperf, "%9.2f,", 2 * 1e-9 * n_madd / et_seconds );
+                  else fprintf(tile_nperf, "%9.2f\n", 2 * 1e-9 * n_madd / et_seconds );
                   table.header_span_end();
               }
+                if ( roofline ){
+                    double flops = NPerf_metric_value_get("smsp__sass_thread_inst_executed_op_fadd_pred_on.sum") + 
+                        NPerf_metric_value_get("smsp__sass_thread_inst_executed_op_fmul_pred_on.sum") + 
+                        NPerf_metric_value_get("smsp__sass_thread_inst_executed_op_ffma_pred_on.sum")*2; 
+                    //table.entry("flops", "%f", flops );
+                    table.entry("GFlops", "%7.3f", flops*(1e-9)/et_seconds );
+                    fprintf(tile_nperf, "%7.3f,", flops*(1e-9)/et_seconds );
+                    
+                    double occ = NPerf_metric_value_get("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
+                    table.entry( "occ", "%5.2f", occ );
+                    fprintf(tile_nperf, "%5.2f,", occ );
+
+                    //table.header_span_start("L1 (Bytes)");
+                    double gld = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum");
+                    //table.entry( "gld", "%7.1f",gld );
+                    double gst = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum");
+                    //table.entry( "gst", "%7.1f",gst );
+                    double atm = 32*(NPerf_metric_value_get("l1tex__t_set_accesses_pipe_lsu_mem_global_op_atom.sum") + 
+                                        NPerf_metric_value_get("l1tex__t_set_accesses_pipe_lsu_mem_global_op_red.sum"));
+                    //table.entry( "atomic", "%7.1f",atm );
+                    double local_ld = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum");
+                    //table.entry( "local_ld", "%7.1f",local_ld );
+                    double local_st = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum");
+                    //table.entry( "local_st", "%7.1f", local_st);
+                    double sh_ld = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
+                    //table.entry( "sh_ld", "%7.1f",sh_ld );
+                    double sh_st = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum");
+                    //table.entry( "sh_st", "%7.1f",sh_st );
+                    double l1_ai = flops / (gld + gst + atm + local_ld + local_st + sh_ld + sh_st);
+                    table.entry( "L1 AI", "%7.4f",l1_ai);
+                    fprintf(tile_nperf, "%7.4f,",l1_ai);
+                    //table.header_span_end();
+                    
+                    //table.header_span_start("L2 (Bytes)"); 
+                    //double l2_rd = 32*NPerf_metric_value_get("lts__t_sectors_op_read.sum");
+                    //table.entry( "l2_rd", "%7.1f",l2_rd );
+                    //double l2_atm = 32*NPerf_metric_value_get("lts__t_sectors_op_atom.sum");
+                    //table.entry( "l2_atm", "%7.1f",l2_atm );
+                    //double l2_red = 32*NPerf_metric_value_get("lts__t_sectors_op_red.sum");
+                    //table.entry( "l2_red", "%7.1f",l2_red );
+                    //double l2_wr = 32*NPerf_metric_value_get("lts__t_sectors_op_write.sum");
+                    //table.entry( "l2_wr", "%7.1f",l2_wr );
+                    double l2_wr = NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum");
+                    double l2_rd = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum");
+                    //double l2_ai = flops / (l2_rd + l2_atm + l2_red + l2_wr);
+                    double l2_ai = flops / (l2_rd + l2_wr);
+                    table.entry( "L2 AI", "%7.4f",l2_ai);
+                    fprintf(tile_nperf, "%7.4f,",l2_ai);
+                     
+                    double dram_rd = 32*NPerf_metric_value_get("dram__sectors_read.sum");
+                    //table.entry( "dram_rd", "%f",dram_rd );
+                    double dram_wr = 32*NPerf_metric_value_get("dram__sectors_write.sum");
+                    //table.entry( "dram_wr", "%f",dram_wr );
+                    double dram_ai = flops / (dram_rd + dram_wr);
+                    table.entry( "dram AI", "%7.4f",dram_ai);
+                    fprintf(tile_nperf, "%7.4f\n",dram_ai);
+                }
             // transfer data to host
             cudaMemcpy
               ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
