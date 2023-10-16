@@ -4247,7 +4247,7 @@ void run(DataLoader& input_vo){
                 (   n_ld_seg / nz_p_seg
                   + n_ld_insn_nz /
                     ( k_prop_rc_direct.contains(aki.name_base)
-                      ? 1.0 : nz_p_seg * ceil(nz_p_seg/32) ) )
+                      ? 1.0 : nz_p_seg / ceil(nz_p_seg/32) ) )
                 / n_b_elt_p_thd
                 + n_ld_insn_b_elt / nz_p_toc;
 
