@@ -3107,90 +3107,113 @@ void flexspmm_cuda_wo_pre_v26(){
 
     const Mat_POD& md = mat_dev;
     uint32_t sm_id = smid_get();    
-    int warp_id = threadIdx.y;
+    uint32_t lane_id = threadIdx.x%32;
     timing_start(); 
     
-    extern __shared__ int sh[];
-    // |--------|-------|-------|-------|-------|-------|--|--|
-    // |  32,r  |  32,r |  32,c |  32,c |  32,v |  32,v |   
-    // |  wp0   |  wp1  |  wp0  |  wp1  |  wp0  |  wp1  |sidx0|sidx1|
-      
-    int     *rIdx = sh;
-    int     *cIdx = &sh[ (blockDim.y<<5) ]; // imply blockDim.x==32
-    float    *val = (float *)&sh[ (blockDim.y<<6) ];
-    int  *seg_idx = &sh[ (blockDim.y<<5)*3 + warp_id ];
-    
-    // since blockDim.x==32, shmem_offset is the offset of a warp
-    int shmem_offset = ( threadIdx.y<<5 ); 
-
     int gold_row_id[tm];
-    int nsi = sm_id;
-    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];     
-    
-    while ( true ) { // over tile segments in a bucket
-                
-        int seg_idx_0 = threadIdx.x ? 0 : atomicAdd(&md.next_seg_dev[nsi],1);
+   
+    int nsi = sm_id; 
+    const int tail_seg_idx = md.grouped_tailSeg_dev[ nsi ];     
+    while ( true ){ // over tile segments in a bucket
+                   
+        int seg_idx_0 = threadIdx.x? 0 : atomicAdd(&md.next_seg_dev[ nsi ],1);
+        __shared__ int seg_idx;
         
-        __syncwarp();
-        if ( threadIdx.x == 0) seg_idx[0] = seg_idx_0;
-        __syncwarp();
-        
-        if ( nsi < md.sms && seg_idx[0] >= tail_seg_idx ){ nsi = md.sms; continue; }
-        if ( nsi == md.sms && seg_idx[0] >= md.n_segs ) break;
+        __syncthreads();
+        if ( threadIdx.x==0 ) seg_idx = seg_idx_0;
+        __syncthreads();
 
+        if ( nsi < md.sms && seg_idx >= tail_seg_idx ){ nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx >= md.n_segs ) break;
 
-        int seg_cur_id = md.segPtr_dev[ seg_idx[0] ]; 
-        int seg_nxt_id = md.segPtr_dev[ seg_idx[0]+1 ];
+        int seg_cur_id = md.segPtr_dev[ seg_idx ]; 
+        int nnz_cur_seg = md.segPtr_dev[ seg_idx+1 ] - seg_cur_id;
         
         #pragma unroll
         for (int i=0; i<tm; ++i){
-            gold_row_id[i] = md.segVoMap_dev[ seg_idx[0]*tm+i ];
+            gold_row_id[i] = md.segVoMap_dev[seg_idx*tm+i];
         }
-     
-        // note: blockDim.x = 32
-        for ( int cid = 0; cid<md.k; cid+=32 ){
-            float res[tm]{};
-            for ( int nz_i=seg_cur_id; nz_i<seg_nxt_id; nz_i += 32 ){    
-                // load non-zeros from glb to sh
-                if ( nz_i+threadIdx.x < seg_nxt_id ){
-                    int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[ nz_i+threadIdx.x ];
-                    rIdx[ shmem_offset+threadIdx.x ] = rc.x;
-                    cIdx[ shmem_offset+threadIdx.x ] = rc.y * md.k;
-                    val[ shmem_offset+threadIdx.x ] = md.vals_dev[ nz_i+threadIdx.x ];
-                }
-                __syncwarp();
+        
+        const int n_rounds = nnz_cur_seg / 32; 
+        const uint nnz_remaining = nnz_cur_seg % 32;
+        const int vidx_base = seg_cur_id + n_rounds * 32;
+        
+        for ( int c_col=threadIdx.x; c_col<md.k; c_col += blockDim.x ){ // over C columns
+	        float res[tm]{};
+                
+            int last_v_c = -1;
+            float last_b = -1;
+            for ( int rnd = 0; rnd < n_rounds; ++rnd ){
 
-                if ( cid+threadIdx.x<md.k ){
-                    // use loaded non-zeros
-                    for ( int z=0; z<32 && (nz_i+z)<seg_nxt_id; z++ ){  
-                        int ridx = rIdx[ shmem_offset + z ];
-                        float nz_val = val[ shmem_offset + z ];
-                        int b_col = cIdx[ shmem_offset + z ] + cid + threadIdx.x;
-
-                        res[ridx] += md.shadow_b_dev[ b_col ] * nz_val;  
-                    }
-                }
-                __syncwarp();
+                // load sparse nz from glb mem
+                const int vidx = seg_cur_id + rnd*32 + lane_id;
+                const float val = md.vals_dev[vidx];
+                const int ridx = md.segNzRowIdx_dev[vidx];
+                const int cidx = md.segNzColIdx_dev[vidx];
+                
+                // exchange nnz within a warp && perfom FMA
+                for (int it=0; it<32; ++it){
+                  float v = __shfl_sync(FULL_MASK, val, it);
+                  int v_r = __shfl_sync(FULL_MASK, ridx, it);
+                  int v_c = __shfl_sync(FULL_MASK, cidx, it);
+                  if ( v_c != last_v_c ){
+                      last_v_c = v_c;
+                      last_b = md.shadow_b_dev[ v_c*md.k + c_col ];
+                  }
+                  res[v_r] += v * last_b;
+                  
+                }    
             }
+
+
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   float val = md.vals_dev[ vidx_base+z ];
+                   int ridx = md.segNzRowIdx_dev[ vidx_base+z ];
+                   int cidx = md.segNzColIdx_dev[ vidx_base+z ];
+                   res[ridx] += md.shadow_b_dev[ cidx * md.k + c_col ] * val;  
+                 }
+             };
             
-            if ( cid+threadIdx.x<md.k ){
-                // store C tiles back to global mem
-                #pragma unroll
-                for ( int c=0; c<tm; ++c ){
-                    int actual_row = gold_row_id[ c ] & 0x7fffffff;
-                     
-                    if ( actual_row<md.m ){
-                        int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
-                        int addr = actual_row*md.k;
-                        if ( atomicORnot>>31 ){
-                            atomicAdd( &md.mat_c_dev[ addr + cid + threadIdx.x ], res[c] );
-                        }else{
-                            md.mat_c_dev[ addr + cid + threadIdx.x ] = res[c];
-                        }
+            if ( nnz_remaining ){
+              #define C5(n) C4(n) C4(n+16)
+              #define C4(n) C3(n) C3(n+8)
+              #define C3(n) C2(n) C2(n+4)
+              #define C2(n) C1(n) C1(n+2)
+              #define C1(n) C0(n) C0(n+1)
+              #define C0(n) case n: do_n(n); break;
+              switch ( nnz_remaining ) {
+                C2(1);  // This generates do_n(1) to do_n(4)
+              default: do_n( nnz_remaining ); break;
+              }
+              #undef C5
+              #undef C4
+              #undef C3
+              #undef C2
+              #undef C1
+              #undef C0
+            } 
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col], res[c] );
+                    }else{
+                        md.mat_c_dev[ addr + c_col ] = res[ c ];
                     }
                 }
             }
-        } // end C column 
+         
+        }// end C colums
+        
     } // end tile-segs loops
     
         timing_end();
@@ -3782,7 +3805,8 @@ void run(DataLoader& input_vo){
 
 // v10: w/o buffering, rows-based seg allocation, w/o vec, broadcast within a warp 
 // v22: w/o buffering, sm-based seg allocation, w/o vec, broadcast within a warp 
-//#define flex_kernel flexspmm_cuda_wo_pre_v22
+// v26: w/o buffering, sm-based seg allocation, w/o vec, broadcast within a warp, reuse b in regs  
+#define flex_kernel flexspmm_cuda_wo_pre_v22
 
 // v11: w/o buffering, rows-based seg allocation, vec4 dense input, broadcast within a warp 
 //#define flex_kernel flexspmm_cuda_w_vec4_v11
@@ -3801,7 +3825,7 @@ void run(DataLoader& input_vo){
 // v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
-#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -3998,10 +4022,10 @@ void run(DataLoader& input_vo){
         if ( opt_vary_grid_size )
           for ( int n_blks = num_sm; n_blks < mat.n_segs; n_blks <<= 1 )
           {
-              //grid_sizes.push_back( n_blks );
+              grid_sizes.push_back( n_blks );
           }
-        //grid_sizes.push_back( mat.n_segs );
-        grid_sizes.push_back( num_sm*64 );
+        grid_sizes.push_back( mat.n_segs );
+        //grid_sizes.push_back( num_sm*64 );
 
         // Allocate storage for timing data.
         //
