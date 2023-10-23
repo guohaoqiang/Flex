@@ -221,6 +221,7 @@ void Mat::sortSegs(){
 	std::vector<unsigned int> segPtr1(1,0);
 	std::vector<unsigned int> segNzRCIdx1;
 	std::vector<unsigned int> segNzRowIdx1;
+	std::vector<unsigned int> segNzRowIdx_2bit1;
 	std::vector<unsigned int> segNzColIdx1;
 	std::vector<float> newVals1;
 	std::vector<unsigned int> segVoMap1;
@@ -413,9 +414,8 @@ void Mat::csr2seg_Cmajor(int ridx){
             if ( colIdx[c]==j && c<rowPtr[i+1] ){
                 // nze values
                 segNzRowIdx.push_back(i-rowStart);
-                //segNzRowIdx.push_back(i);
                 segNzColIdx.push_back(j);
-
+                
                 segNzRCIdx.push_back(i-rowStart); 
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
@@ -435,7 +435,7 @@ void Mat::csr2seg_Cmajor(int ridx){
             count_segs[ridx]++;
             segPtr.push_back(segPtr.back()+nnzInSeg);
             nnzInSeg = 0;
-            
+           
             for (int i=rowStart; i<rowStart+tm; ++i){
                 if ( i<rowEnd ){
                     if ( atom[i-rowStart]>=0 && atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
