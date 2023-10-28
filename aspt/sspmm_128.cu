@@ -180,6 +180,7 @@ void ready2(int argc, char **argv){
             gold_temp_v[ j ].val = vals[ j ]; 
         }
     }
+    gold_temp_v[ne].row = nr;
 }
 
 void ready(int argc, char **argv)
