@@ -3143,14 +3143,12 @@ void flexspmm_cuda_w_vec4_v26(){
                  {
                    int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
                    float val = md.vals_dev[ seg_cur_id+z ];
-                   int ridx = rc.x;
-                   int cidx = rc.y;
-                   float *shadow_b_addr = &md.shadow_b_dev[ cidx*md.k ];
+                   float *shadow_b_addr = &md.shadow_b_dev[ rc.y*md.k ];
                    float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
-                   res[ridx][0] += val * b_vec.x;
-                   res[ridx][1] += val * b_vec.y;
-                   res[ridx][2] += val * b_vec.z;
-                   res[ridx][3] += val * b_vec.w;
+                   res[rc.x][0] += val * b_vec.x;
+                   res[rc.x][1] += val * b_vec.y;
+                   res[rc.x][2] += val * b_vec.z;
+                   res[rc.x][3] += val * b_vec.w;
                    
                  }
              };
@@ -3227,12 +3225,10 @@ void flexspmm_cuda_w_vec2_v27(){
                  {
                    int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
                    float val = md.vals_dev[ seg_cur_id+z ];
-                   int ridx = rc.x;
-                   int cidx = rc.y;
-                   float *shadow_b_addr = &md.shadow_b_dev[ cidx*md.k ];
+                   float *shadow_b_addr = &md.shadow_b_dev[ rc.y*md.k ];
                    float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ c_col ];
-                   res[ridx][0] += val * b_vec.x;
-                   res[ridx][1] += val * b_vec.y;
+                   res[rc.x][0] += val * b_vec.x;
+                   res[rc.x][1] += val * b_vec.y;
                    
                  }
              };
@@ -3263,6 +3259,252 @@ void flexspmm_cuda_w_vec2_v27(){
     
         timing_end();
 }
+
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_w_vec2_v28(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x / 32;
+    const int lane_id = threadIdx.x % 32;
+    __shared__ int seg_idx[4];
+    uint32_t sm_id = smid_get();
+
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+      int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+      __syncwarp();
+      if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+      __syncwarp();
+
+      if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+      if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+
+        int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ]; 
+        int nnz_cur_seg = md.segPtr_dev[ seg_idx[ wp_id ] + 1 ] - seg_cur_id;
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+        
+        for ( int c_col=lane_id; c_col<md.k/2; c_col += 32 ){ // over C columns
+	        float res[tm][2]{};
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
+                   float val = md.vals_dev[ seg_cur_id+z ];
+                   float *shadow_b_addr = &md.shadow_b_dev[ rc.y*md.k ];
+                   float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ c_col ];
+                   res[rc.x][0] += val * b_vec.x;
+                   res[rc.x][1] += val * b_vec.y;
+                   
+                   //res[rc.x][0] += val * md.shadow_b_dev[ rc.y*md.k + c_col ];
+                   //if ( c_col+32<md.k ) res[rc1.x][1] += val * md.shadow_b_dev[ rc.y*md.k + c_col + 32 ];
+                 }
+             };
+            do_n( nnz_cur_seg );
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*2 + 0 ], res[c][0]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*2 + 1 ], res[c][1]);
+                    }else{
+                        float* mat_c = &md.mat_c_dev[ addr ];
+                        float2 vect2_c = {res[c][0], res[c][1]};
+                        reinterpret_cast<float2*>(mat_c)[c_col ] = vect2_c;
+                        //md.mat_c_dev[ addr + c_col + 0 ] = res[c][0];
+                        //if ( c_col+32<md.k ) md.mat_c_dev[ addr + c_col + 32 ] = res[c][1];
+                    }
+                }
+            }
+         
+        }// end C colums
+
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_w_vec4_v29(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x / 32;
+    const int lane_id = threadIdx.x % 32;
+    __shared__ int seg_idx[4];
+    uint32_t sm_id = smid_get();
+
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+      int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+      __syncwarp();
+      if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+      __syncwarp();
+
+      if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+      if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+
+        int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ]; 
+        int nnz_cur_seg = md.segPtr_dev[ seg_idx[ wp_id ] + 1 ] - seg_cur_id;
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+        
+        for ( int c_col=lane_id; c_col<md.k/4; c_col += 32 ){ // over C columns
+	        float res[tm][4]{};
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
+                   float val = md.vals_dev[ seg_cur_id+z ];
+                   float *shadow_b_addr = &md.shadow_b_dev[ rc.y*md.k ];
+                   float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
+                   res[rc.x][0] += val * b_vec.x;
+                   res[rc.x][1] += val * b_vec.y;
+                   res[rc.x][2] += val * b_vec.z;
+                   res[rc.x][3] += val * b_vec.w;
+                   
+                   //res[rc.x][0] += val * md.shadow_b_dev[ rc.y*md.k + c_col ];
+                   //if ( c_col+32<md.k ) res[rc1.x][1] += val * md.shadow_b_dev[ rc.y*md.k + c_col + 32 ];
+                 }
+             };
+            do_n( nnz_cur_seg );
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 0 ], res[c][0]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[c][1]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[c][2]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[c][3]);
+                    }else{
+                        float* mat_c = &md.mat_c_dev[ addr ];
+                        float4 vect2_c = {res[c][0], res[c][1], res[c][2], res[c][3]};
+                        reinterpret_cast<float4*>(mat_c)[c_col ] = vect2_c;
+                        //md.mat_c_dev[ addr + c_col + 0 ] = res[c][0];
+                        //if ( c_col+32<md.k ) md.mat_c_dev[ addr + c_col + 32 ] = res[c][1];
+                    }
+                }
+            }
+         
+        }// end C colums
+
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_wo_pre_w_vec_v30(){ 
+    // requires preprocess dense mat B
+
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x / 32;
+    const int lane_id = threadIdx.x % 32;
+    __shared__ int seg_idx[4];
+    uint32_t sm_id = smid_get();
+
+    timing_start(); 
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+      int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+      __syncwarp();
+      if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+      __syncwarp();
+
+      if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+      if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+
+        int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ]; 
+        int nnz_cur_seg = md.segPtr_dev[ seg_idx[ wp_id ] + 1 ] - seg_cur_id;
+        
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+        
+        for ( int c_col=lane_id; c_col<md.k; c_col += 32 ){ // over C columns
+	        float res[tm]{};
+            
+            auto do_n = [&](int n)
+             {
+               for ( int z=0; z<n; z++ )
+                 {
+                   int2 rc = reinterpret_cast<int2*>(md.segNzRCIdx_dev)[seg_cur_id+z];
+                   float val = md.vals_dev[ seg_cur_id+z ];
+                   res[rc.x] += val * md.shadow_b_dev[ rc.y*md.k + c_col ]; 
+                 }
+             };
+            do_n( nnz_cur_seg );
+            
+            // store C tiles back to global mem
+            #pragma unroll
+            for ( int c=0; c<tm; ++c ){
+                int actual_row = gold_row_id[ c ] & 0x7fffffff;
+                 
+                if ( actual_row<md.m ){
+                    int atomicORnot = gold_row_id[c] & (1<<31); // get MSB
+                    int addr = actual_row*md.k;
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col ], res[c]);
+                    }else{
+                        md.mat_c_dev[ addr + c_col ] = res[c];
+                    }
+                }
+            }
+         
+        }// end C colums
+
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
 
 GPU_Info
 print_gpu_and_kernel_info()
@@ -3849,13 +4091,15 @@ void run(DataLoader& input_vo){
 
 // v10: w/o buffering, rows-based seg allocation, w/o vec, broadcast within a warp 
 // v22: w/o buffering, sm-based seg allocation, w/o vec, broadcast within a warp 
-#define flex_kernel flexspmm_cuda_wo_pre_v22
+//#define flex_kernel flexspmm_cuda_wo_pre_v22
 
 // v11: w/o buffering, rows-based seg allocation, vec4 dense input, broadcast nz within a warp 
-// v26: w/o buffering, sm-based seg allocation, vec4, broadcast nz within a warp
-//#define flex_kernel flexspmm_cuda_w_vec4_v26
-// v27: w/o buffering, sm-based seg allocation, vec2, broadcast nz within a warp
-//#define flex_kernel flexspmm_cuda_w_vec2_v27
+// v26: w/o buffering, sm-based seg allocation, vec4
+// v29: w/o buffering, sm-based seg allocation, vec4, a tile-seg per warp
+//#define flex_kernel flexspmm_cuda_w_vec4_v29
+// v27: w/o buffering, sm-based seg allocation, vec2, 
+// v28: w/o buffering, sm-based seg allocation, vec2, a tile-seg per warp 
+//#define flex_kernel flexspmm_cuda_w_vec2_v28
 
 // v12: double buffering, rows-based seg allocation, w/o vec 
 // v23: double buffering, sm-based seg allocation, w/o vec 
@@ -3871,7 +4115,8 @@ void run(DataLoader& input_vo){
 // v18: w/o buffering, a block process contiguous layout segs, vec r and c of sparse input 
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
-//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v21
+// v30: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp  
+#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v30
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -3884,11 +4129,15 @@ void run(DataLoader& input_vo){
         { "flexspmm_cuda_w_pre_w_vec_v13", 2},
         { "flexspmm_cuda_w_vec4_v26", 4 },
         { "flexspmm_cuda_w_vec2_v27", 2 },
+        { "flexspmm_cuda_w_vec4_v29", 4 },
+        { "flexspmm_cuda_w_vec2_v28", 2 },
       };
 
     // Kernels that use a vec2 to load row/column pairs.
     set<string> k_prop_vec2_rc { "flexspmm_cuda_w_pre_w_vec_v14" , "flexspmm_cuda_wo_pre_w_vec_v21", 
-                                "flexspmm_cuda_wo_pre_w_vec_v18", "flexspmm_cuda_wo_pre_w_vec_v20"};
+                                "flexspmm_cuda_wo_pre_w_vec_v18", "flexspmm_cuda_wo_pre_w_vec_v20",
+                                "flexspmm_cuda_w_vec2_v27", "flexspmm_cuda_w_vec2_v28",
+                                "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_wo_pre_w_vec_v30"};
 
     // RC Direct means that all threads in a warp load the same RC and
     // wht elements from global memory. Otherwise, Different threads
@@ -3901,7 +4150,6 @@ void run(DataLoader& input_vo){
     // next_seg_dev 
     set<string> atomic_seg_idx
       { "flexspmm_cuda_wo_pre_w_vec_v21" , "flexspmm_cuda_wo_pre_v22"};
-
 
 #ifdef CUBE4X4
         SPECIFY_KERNEL(flex_kernel, 0, NBX, NBY, NT);
@@ -4103,7 +4351,7 @@ void run(DataLoader& input_vo){
         for ( const uint gridx: grid_sizes )
           {
             const dim3 grid_sz = { gridx, 1, 1 };
-            const dim3 block_sz = { threads, 1, 1 }; // here we keep blockDim.x == 64
+            const dim3 block_sz = { threads, 1, 1 }; 
             //uint warps = mat.k<128 ? 2 : 4; // v24 
             //const dim3 block_sz = { 32, warps, 1 }; // v24
             

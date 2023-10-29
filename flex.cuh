@@ -12,6 +12,7 @@
 //#define OUTPUTCSV
 namespace cg = cooperative_groups;
 
+//#define RECT128
 #define CUBE4X4
 #define RECT8X4
 #define RECT16X4

@@ -1,5 +1,7 @@
 # executable
 flex
+sspmm_128
+sspmm_32
 *.o
 *.d
 *.csv
