@@ -335,31 +335,31 @@ void spmv_kernel32_sparse_v2(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int 
                         buf = csr_e[l+lane]*sc;
                         buf2 = csr_ev[l+lane];
                 }
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * vin[i3+offset];
                 r += v4 * vin[i4+offset];
 
-		FTYPE v5 = __shfl_sync(0xffff, buf2, jj+4,MFACTOR);
-		FTYPE v6 = __shfl_sync(0xffff, buf2, jj+5,MFACTOR);
-		int i5 = __shfl_sync(0xffff, buf, jj+4,MFACTOR);
-		int i6 = __shfl_sync(0xffff, buf, jj+5,MFACTOR);
+		FTYPE v5 = __shfl_sync(0xffffffff, buf2, jj+4,MFACTOR);
+		FTYPE v6 = __shfl_sync(0xffffffff, buf2, jj+5,MFACTOR);
+		int i5 = __shfl_sync(0xffffffff, buf, jj+4,MFACTOR);
+		int i6 = __shfl_sync(0xffffffff, buf, jj+5,MFACTOR);
                 r += v5 * vin[i5+offset];
                 r += v6 * vin[i6+offset];
 
-		FTYPE v7 = __shfl_sync(0xffff, buf2, jj+6,MFACTOR);
-		FTYPE v8 = __shfl_sync(0xffff, buf2, jj+7,MFACTOR);
-		int i7 = __shfl_sync(0xffff, buf, jj+6,MFACTOR);
-		int i8 = __shfl_sync(0xffff, buf, jj+7,MFACTOR);
+		FTYPE v7 = __shfl_sync(0xffffffff, buf2, jj+6,MFACTOR);
+		FTYPE v8 = __shfl_sync(0xffffffff, buf2, jj+7,MFACTOR);
+		int i7 = __shfl_sync(0xffffffff, buf, jj+6,MFACTOR);
+		int i8 = __shfl_sync(0xffffffff, buf, jj+7,MFACTOR);
                 r += v7 * vin[i7+offset];
                 r += v8 * vin[i8+offset];
 
@@ -370,17 +370,17 @@ void spmv_kernel32_sparse_v2(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int 
                 buf2 = csr_ev[l+lane];
         }
         if(interm < interm2) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * vin[i3+offset];
                 r += v4 * vin[i4+offset];
 
@@ -388,17 +388,17 @@ void spmv_kernel32_sparse_v2(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int 
                 jj = (jj+4);
         }
         if(interm2 < interm3) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
                 jj = (jj+2);
         }
         if(interm3 < loc2) {
-                r += __shfl_sync(0xffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffff, buf, jj,MFACTOR) + offset];
+                r += __shfl_sync(0xffffffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffffffff, buf, jj,MFACTOR) + offset];
         }
 	atomicAdd(&vout[idx*sc + offset], r);
 }
@@ -428,31 +428,31 @@ void spmv_kernel32_sparse_v2l(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int
                         buf = csr_e[l+lane]*sc;
                         buf2 = csr_ev[l+lane];
                 }
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * vin[i3+offset];
                 r += v4 * vin[i4+offset];
 
-		FTYPE v5 = __shfl_sync(0xffff, buf2, jj+4,MFACTOR);
-		FTYPE v6 = __shfl_sync(0xffff, buf2, jj+5,MFACTOR);
-		int i5 = __shfl_sync(0xffff, buf, jj+4,MFACTOR);
-		int i6 = __shfl_sync(0xffff, buf, jj+5,MFACTOR);
+		FTYPE v5 = __shfl_sync(0xffffffff, buf2, jj+4,MFACTOR);
+		FTYPE v6 = __shfl_sync(0xffffffff, buf2, jj+5,MFACTOR);
+		int i5 = __shfl_sync(0xffffffff, buf, jj+4,MFACTOR);
+		int i6 = __shfl_sync(0xffffffff, buf, jj+5,MFACTOR);
                 r += v5 * vin[i5+offset];
                 r += v6 * vin[i6+offset];
 
-		FTYPE v7 = __shfl_sync(0xffff, buf2, jj+6,MFACTOR);
-		FTYPE v8 = __shfl_sync(0xffff, buf2, jj+7,MFACTOR);
-		int i7 = __shfl_sync(0xffff, buf, jj+6,MFACTOR);
-		int i8 = __shfl_sync(0xffff, buf, jj+7,MFACTOR);
+		FTYPE v7 = __shfl_sync(0xffffffff, buf2, jj+6,MFACTOR);
+		FTYPE v8 = __shfl_sync(0xffffffff, buf2, jj+7,MFACTOR);
+		int i7 = __shfl_sync(0xffffffff, buf, jj+6,MFACTOR);
+		int i8 = __shfl_sync(0xffffffff, buf, jj+7,MFACTOR);
                 r += v7 * vin[i7+offset];
                 r += v8 * vin[i8+offset];
 
@@ -463,17 +463,17 @@ void spmv_kernel32_sparse_v2l(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int
                 buf2 = csr_ev[l+lane];
         }
         if(interm < interm2) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * vin[i3+offset];
                 r += v4 * vin[i4+offset];
 
@@ -481,17 +481,17 @@ void spmv_kernel32_sparse_v2l(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int
                 jj = (jj+4);
         }
         if(interm2 < interm3) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
                 jj = (jj+2);
         }
         if(interm3 < loc2) {
-                r += __shfl_sync(0xffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffff, buf, jj,MFACTOR) + offset];
+                r += __shfl_sync(0xffffffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffffffff, buf, jj,MFACTOR) + offset];
         }
 	atomicAdd(&vout[idx*sc + offset], r);
 }
@@ -521,31 +521,31 @@ void spmv_kernel32_sparse_v2h(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int
                         buf = csr_e[l+lane]*sc;
                         buf2 = csr_ev[l+lane];
                 }
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * vin[i3+offset];
                 r += v4 * vin[i4+offset];
 
-		FTYPE v5 = __shfl_sync(0xffff, buf2, jj+4,MFACTOR);
-		FTYPE v6 = __shfl_sync(0xffff, buf2, jj+5,MFACTOR);
-		int i5 = __shfl_sync(0xffff, buf, jj+4,MFACTOR);
-		int i6 = __shfl_sync(0xffff, buf, jj+5,MFACTOR);
+		FTYPE v5 = __shfl_sync(0xffffffff, buf2, jj+4,MFACTOR);
+		FTYPE v6 = __shfl_sync(0xffffffff, buf2, jj+5,MFACTOR);
+		int i5 = __shfl_sync(0xffffffff, buf, jj+4,MFACTOR);
+		int i6 = __shfl_sync(0xffffffff, buf, jj+5,MFACTOR);
                 r += v5 * vin[i5+offset];
                 r += v6 * vin[i6+offset];
 
-		FTYPE v7 = __shfl_sync(0xffff, buf2, jj+6,MFACTOR);
-		FTYPE v8 = __shfl_sync(0xffff, buf2, jj+7,MFACTOR);
-		int i7 = __shfl_sync(0xffff, buf, jj+6,MFACTOR);
-		int i8 = __shfl_sync(0xffff, buf, jj+7,MFACTOR);
+		FTYPE v7 = __shfl_sync(0xffffffff, buf2, jj+6,MFACTOR);
+		FTYPE v8 = __shfl_sync(0xffffffff, buf2, jj+7,MFACTOR);
+		int i7 = __shfl_sync(0xffffffff, buf, jj+6,MFACTOR);
+		int i8 = __shfl_sync(0xffffffff, buf, jj+7,MFACTOR);
                 r += v7 * vin[i7+offset];
                 r += v8 * vin[i8+offset];
 
@@ -589,17 +589,17 @@ void spmv_kernel32_ssparse(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int *m
         buf2 = csr_ev[loc1+lane];
 
         for(l=loc1; l<interm3; l+=2) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR)*sc;
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR)*sc;
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR)*sc;
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR)*sc;
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
 		jj += 2;
         }
         if(interm3 < loc2) {
-                r += __shfl_sync(0xffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffff, buf, jj,MFACTOR)*sc + offset];
+                r += __shfl_sync(0xffffffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffffffff, buf, jj,MFACTOR)*sc + offset];
         }
     } else {
         for(l=loc1; l<interm3; l+=2) {
@@ -607,10 +607,10 @@ void spmv_kernel32_ssparse(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int *m
 		        buf = csr_e[l+lane];
 		        buf2 = csr_ev[l+lane];
 		}
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR)*sc;
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR)*sc;
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR)*sc;
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR)*sc;
                 r += v1 * vin[i1+offset];
                 r += v2 * vin[i2+offset];
 
@@ -621,7 +621,7 @@ void spmv_kernel32_ssparse(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int *m
                 buf2 = csr_ev[l+lane];
         }
         if(interm3 < loc2) {
-                r += __shfl_sync(0xffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffff, buf, jj,MFACTOR)*sc + offset];
+                r += __shfl_sync(0xffffffff, buf2, jj,MFACTOR) * vin[__shfl_sync(0xffffffff, buf, jj,MFACTOR)*sc + offset];
         }
 
 
@@ -670,31 +670,31 @@ void spmv_kernel32_dense_v2(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int *
                         buf = csr_e[l+lane]&(BW-1);
                         buf2 = csr_ev[l+lane];
                 }
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * sin[i1][lane];
                 r += v2 * sin[i2][lane];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * sin[i3][lane];
                 r += v4 * sin[i4][lane];
 
-		FTYPE v5 = __shfl_sync(0xffff, buf2, jj+4,MFACTOR);
-		FTYPE v6 = __shfl_sync(0xffff, buf2, jj+5,MFACTOR);
-		int i5 = __shfl_sync(0xffff, buf, jj+4,MFACTOR);
-		int i6 = __shfl_sync(0xffff, buf, jj+5,MFACTOR);
+		FTYPE v5 = __shfl_sync(0xffffffff, buf2, jj+4,MFACTOR);
+		FTYPE v6 = __shfl_sync(0xffffffff, buf2, jj+5,MFACTOR);
+		int i5 = __shfl_sync(0xffffffff, buf, jj+4,MFACTOR);
+		int i6 = __shfl_sync(0xffffffff, buf, jj+5,MFACTOR);
                 r += v5 * sin[i5][lane];
                 r += v6 * sin[i6][lane];
 
-		FTYPE v7 = __shfl_sync(0xffff, buf2, jj+6,MFACTOR);
-		FTYPE v8 = __shfl_sync(0xffff, buf2, jj+7,MFACTOR);
-		int i7 = __shfl_sync(0xffff, buf, jj+6,MFACTOR);
-		int i8 = __shfl_sync(0xffff, buf, jj+7,MFACTOR);
+		FTYPE v7 = __shfl_sync(0xffffffff, buf2, jj+6,MFACTOR);
+		FTYPE v8 = __shfl_sync(0xffffffff, buf2, jj+7,MFACTOR);
+		int i7 = __shfl_sync(0xffffffff, buf, jj+6,MFACTOR);
+		int i8 = __shfl_sync(0xffffffff, buf, jj+7,MFACTOR);
                 r += v7 * sin[i7][lane];
                 r += v8 * sin[i8][lane];
 
@@ -705,34 +705,34 @@ void spmv_kernel32_dense_v2(int sc, int *csr_v, int *csr_e, FTYPE *csr_ev, int *
                 buf2 = csr_ev[l+lane];
         }
         if(interm < interm2) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * sin[i1][lane];
                 r += v2 * sin[i2][lane];
 
-		FTYPE v3 = __shfl_sync(0xffff, buf2, jj+2,MFACTOR);
-		FTYPE v4 = __shfl_sync(0xffff, buf2, jj+3,MFACTOR);
-		int i3 = __shfl_sync(0xffff, buf, jj+2,MFACTOR);
-		int i4 = __shfl_sync(0xffff, buf, jj+3,MFACTOR);
+		FTYPE v3 = __shfl_sync(0xffffffff, buf2, jj+2,MFACTOR);
+		FTYPE v4 = __shfl_sync(0xffffffff, buf2, jj+3,MFACTOR);
+		int i3 = __shfl_sync(0xffffffff, buf, jj+2,MFACTOR);
+		int i4 = __shfl_sync(0xffffffff, buf, jj+3,MFACTOR);
                 r += v3 * sin[i3][lane];
                 r += v4 * sin[i4][lane];
 
                 jj = (jj+4);
         }
         if(interm2 < interm3) {
-		FTYPE v1 = __shfl_sync(0xffff, buf2, jj,MFACTOR);
-		FTYPE v2 = __shfl_sync(0xffff, buf2, jj+1,MFACTOR);
-		int i1 = __shfl_sync(0xffff, buf, jj,MFACTOR);
-		int i2 = __shfl_sync(0xffff, buf, jj+1,MFACTOR);
+		FTYPE v1 = __shfl_sync(0xffffffff, buf2, jj,MFACTOR);
+		FTYPE v2 = __shfl_sync(0xffffffff, buf2, jj+1,MFACTOR);
+		int i1 = __shfl_sync(0xffffffff, buf, jj,MFACTOR);
+		int i2 = __shfl_sync(0xffffffff, buf, jj+1,MFACTOR);
                 r += v1 * sin[i1][lane];
                 r += v2 * sin[i2][lane];
 
                 jj = (jj+2);
         }
         if(interm3 < loc2) {
-                r += __shfl_sync(0xffff, buf2, jj,MFACTOR) * sin[__shfl_sync(0xffff, buf, jj,MFACTOR)][lane];
+                r += __shfl_sync(0xffffffff, buf2, jj,MFACTOR) * sin[__shfl_sync(0xffffffff, buf, jj,MFACTOR)][lane];
         }
 	atomicAdd(&vout[(base_addr*BH+i)*sc + offset], r); //if not 0?
 
@@ -763,11 +763,11 @@ __global__ void dense_block_detect(int *csr_v, int *mcsr_chk, int *csr_e0, int *
 		if(scr_pad[i] >= THRESHOLD) r++;
 	}
 	__syncthreads();
-	r += __shfl_down_sync(0xffff, r, 16);
-	r += __shfl_down_sync(0xffff, r, 8);
-	r += __shfl_down_sync(0xffff, r, 4);
-	r += __shfl_down_sync(0xffff, r, 2);
-	r += __shfl_down_sync(0xffff, r, 1);
+	r += __shfl_down_sync(0xffffffff, r, 16);
+	r += __shfl_down_sync(0xffffffff, r, 8);
+	r += __shfl_down_sync(0xffffffff, r, 4);
+	r += __shfl_down_sync(0xffffffff, r, 2);
+	r += __shfl_down_sync(0xffffffff, r, 1);
 	if((threadIdx.x & 31) == 0) scr_pad[threadIdx.x>>5] = r;
 	__syncthreads();
 	if(threadIdx.x == 0) {
@@ -939,11 +939,11 @@ __global__ void fill_mcsre(int *csr_v, int *mcsr_cnt, STYPE *key2, int *mcsr_e, 
 		
 	}
 	int r = (csr_v[idx+1] - mcsr_e[bidx+delta-1]);
-	r += __shfl_down_sync(0xffff, r, 16);
-	r += __shfl_down_sync(0xffff, r, 8);
-	r += __shfl_down_sync(0xffff, r, 4);
-	r += __shfl_down_sync(0xffff, r, 2);
-	r += __shfl_down_sync(0xffff, r, 1);
+	r += __shfl_down_sync(0xffffffff, r, 16);
+	r += __shfl_down_sync(0xffffffff, r, 8);
+	r += __shfl_down_sync(0xffffffff, r, 4);
+	r += __shfl_down_sync(0xffffffff, r, 2);
+	r += __shfl_down_sync(0xffffffff, r, 1);
 	if((threadIdx.x&31) == 0) atomicAdd(&rmv[(idx>>5)&127], r);
 }
 
@@ -964,17 +964,17 @@ __global__ void cal_vari(int nr, double avg, int *mcsr_cnt, int *mcsr_e, double 
 	double r = ((double)i2 - avg);
 	double r2 = r*r;
 
-	r2 += __shfl_down_sync(0xffff, r2, 16);
-	r2 += __shfl_down_sync(0xffff, r2, 8);
-	r2 += __shfl_down_sync(0xffff, r2, 4);
-	r2 += __shfl_down_sync(0xffff, r2, 2);
-	r2 += __shfl_down_sync(0xffff, r2, 1);
+	r2 += __shfl_down_sync(0xffffffff, r2, 16);
+	r2 += __shfl_down_sync(0xffffffff, r2, 8);
+	r2 += __shfl_down_sync(0xffffffff, r2, 4);
+	r2 += __shfl_down_sync(0xffffffff, r2, 2);
+	r2 += __shfl_down_sync(0xffffffff, r2, 1);
 	i2 /= STHRESHOLD;
-	i2 += __shfl_down_sync(0xffff, i2, 16);	
-	i2 += __shfl_down_sync(0xffff, i2, 8);	
-	i2 += __shfl_down_sync(0xffff, i2, 4);	
-	i2 += __shfl_down_sync(0xffff, i2, 2);	
-	i2 += __shfl_down_sync(0xffff, i2, 1);	
+	i2 += __shfl_down_sync(0xffffffff, i2, 16);	
+	i2 += __shfl_down_sync(0xffffffff, i2, 8);	
+	i2 += __shfl_down_sync(0xffffffff, i2, 4);	
+	i2 += __shfl_down_sync(0xffffffff, i2, 2);	
+	i2 += __shfl_down_sync(0xffffffff, i2, 1);	
 	if((threadIdx.x&31) == 0) {
 		atomicAdd(&vari[((blockIdx.x*blockDim.x)>>5)&127], r2);
 		if(i2 > 0) atomicAdd(&special_bb[((blockIdx.x*blockDim.x)>>5)&127], i2);
