@@ -4099,7 +4099,7 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_vec4_v29
 // v27: w/o buffering, sm-based seg allocation, vec2, 
 // v28: w/o buffering, sm-based seg allocation, vec2, a tile-seg per warp 
-//#define flex_kernel flexspmm_cuda_w_vec2_v28
+#define flex_kernel flexspmm_cuda_w_vec2_v27
 
 // v12: double buffering, rows-based seg allocation, w/o vec 
 // v23: double buffering, sm-based seg allocation, w/o vec 
@@ -4116,7 +4116,7 @@ void run(DataLoader& input_vo){
 // v20: w/o buffering, rows-based seg allocation, vec r and c of sparse input  
 // v21: w/o buffering, sm-based seg allocation, vec r and c of sparse input  
 // v30: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp  
-#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v30
+//#define flex_kernel flexspmm_cuda_wo_pre_w_vec_v30
 
 // v13: double buffering, rows-based seg allocation, vec2 dense input 
 // v14: double buffering, rows-based seg allocation, vec r and c of sparse input 
@@ -4144,12 +4144,22 @@ void run(DataLoader& input_vo){
     // load different elements and shared memory or swizzles are used
     // to distribute them.
     set<string> k_prop_rc_direct
-      { "flexspmm_cuda_wo_pre_v10", "flexspmm_cuda_w_vec4_v11" , "flexspmm_cuda_wo_pre_v22"};
+      { "flexspmm_cuda_wo_pre_w_vec_v18", "flexspmm_cuda_wo_pre_w_vec_v20" , 
+          "flexspmm_cuda_wo_pre_w_vec_v21", "flexspmm_cuda_w_vec4_v26",
+          "flexspmm_cuda_w_vec2_v27", "flexspmm_cuda_w_vec2_v28",
+          "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_wo_pre_w_vec_v30"
+      };
     
    
     // next_seg_dev 
     set<string> atomic_seg_idx
-      { "flexspmm_cuda_wo_pre_w_vec_v21" , "flexspmm_cuda_wo_pre_v22"};
+      { "flexspmm_cuda_wo_pre_w_vec_v21", "flexspmm_cuda_wo_pre_v22",
+        "flexspmm_cuda_w_vec4_v26", "flexspmm_cuda_w_vec2_v27", 
+        "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_w_vec2_v28"};
+
+    // a seg-tile per warp
+    set<string> wp_seg_tile{"flexspmm_cuda_wo_pre_w_vec_v30", "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_w_vec2_v28"};
+    
 
 #ifdef CUBE4X4
         SPECIFY_KERNEL(flex_kernel, 0, NBX, NBY, NT);
@@ -4326,12 +4336,23 @@ void run(DataLoader& input_vo){
 
         vector<uint> grid_sizes;
 
-        if ( opt_vary_grid_size )
-          for ( int n_blks = num_sm; n_blks < mat.n_segs; n_blks <<= 1 )
-          {
-              grid_sizes.push_back( n_blks );
-          }
-        grid_sizes.push_back( mat.n_segs );
+        if ( opt_vary_grid_size ){
+            if( wp_seg_tile.contains(aki.name_base) ){
+                // 64 threads per block, so a block can proccess 2 seg-tile. 
+                // at most mat.n_segs/2 bloccks are required 
+                for ( int n_blks = num_sm; n_blks < mat.n_segs/2; n_blks <<= 1 )
+                {
+                    grid_sizes.push_back( n_blks );
+                }
+                grid_sizes.push_back( mat.n_segs/2 );
+            }else{
+                for ( int n_blks = num_sm; n_blks < mat.n_segs; n_blks <<= 1 )
+                {
+                    grid_sizes.push_back( n_blks );
+                }
+                grid_sizes.push_back( mat.n_segs );
+            }
+        }
         //grid_sizes.push_back( num_sm*64 );
 
         // Allocate storage for timing data.
@@ -4566,7 +4587,7 @@ void run(DataLoader& input_vo){
               const bool v_vec2_rc = k_prop_vec2_rc.contains(aki.name_base);
               const int vec_b_sz = max(1,k_prop_vec_b[aki.name_base]);
 
-              const int n_ld_seg = mat.tm+2;  // Loads per tile-segment. (segVoMap + segPtr)
+              const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
 
               // Loads per nz. ( r , c, edge weight)
               const int n_ld_nz = 3;
@@ -4594,10 +4615,10 @@ void run(DataLoader& input_vo){
 
               table.entry
                 ( "G", "%4.1f",
-                  NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
+                  ( NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum") + NPerf_metric_value_get("sm__sass_inst_executed_op_global_atom.sum") )
                   / n_madd_p_wp );
               fprintf(tile_nperf, "%4.1f,",
-                  NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum")
+                  ( NPerf_metric_value_get("sm__sass_inst_executed_op_global_ld.sum") + NPerf_metric_value_get("sm__sass_inst_executed_op_global_atom.sum") )
                   / n_madd_p_wp );
 
               table.entry( "GC", "%4.1f", n_ld_p_madd);
@@ -4690,9 +4711,9 @@ void run(DataLoader& input_vo){
                   //        + mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
               }
               const double n_bytes =
-                4 * ( n_segs * n_ld_seg
-                      + mat.nnz * n_ld_nz
-                      + mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
+                4.0 * ( 1.0 * n_segs * n_ld_seg
+                      + 1.0 * mat.nnz * n_ld_nz
+                      + 1.0 * mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
               table.entry( "BC", "%5.2f", n_bytes / n_madd );
               fprintf(tile_nperf, "%5.2f,", n_bytes / n_madd );
               table.header_span_end();
