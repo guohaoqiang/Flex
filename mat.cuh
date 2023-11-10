@@ -114,6 +114,8 @@ class Mat : public Mat_POD{
     
     int64_t est_fp = 0;
     int64_t est_ld_bytes = 0;
+    int64_t est_ld_bytes_tiling_ideal = 0;
+    int64_t est_ld_bytes_tiling_sm_ideal = 0;
     int64_t est_st_bytes = 0;
     int tileNnz_bytes; 
     int tileColIdx_bytes; 
@@ -132,6 +134,7 @@ class Mat : public Mat_POD{
   std::vector<uint> panel_lg_nnz_histo;
   std::vector<uint> seg_lg_nnz_histo;
   int64_t n_col_sum; // Sum of population of bitMaps == num nz cols in tiles.
+  int64_t n_col_sum_sm;
 
   int row_nnz_get(int r) const { return rowPtr[r+1] - rowPtr[r]; }
 

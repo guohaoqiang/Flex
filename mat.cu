@@ -101,6 +101,42 @@ void Mat::transfer2(){
     cudaMemcpy(grouped_tailSeg_dev, grouped_tailSeg.data(), grouped_tailSeg.size()*sizeof(int), cudaMemcpyHostToDevice);
 }
 void Mat::dataVolume_est2(){
+  
+    int64_t validate_nnz = 0; 
+    vector<unordered_set<int>> col_st(sms+1, unordered_set<int>());  
+    
+    for (int i=0; i<sms; ++i){
+        
+        for (int j=seg_rowPtr[ next_seg[ i ]*(tm+1) ]; 
+                j<seg_rowPtr[ grouped_tailSeg[ i ]*(tm+1) ]; ++j){
+            validate_nnz++;
+            col_st[i].insert( (int)segNzCV[j*2] );
+        }
+    }
+    if ( false && validate_nnz!=nnz ){
+        printf("%d of %s, validate_nnz = %d, nnz = %d\n", __LINE__,__FILE__,
+                validate_nnz, nnz);
+    }
+    for (int i=next_seg[sms]; i<n_segs; ++i){
+       
+       for (int ii=0; ii<tm; ++ii) 
+        for (int j=seg_rowPtr[ i*(tm+1)+ii ]; 
+                j<seg_rowPtr[ i*(tm+1)+ii+1 ]; ++j){
+            validate_nnz++;
+            col_st[sms].insert( (int)segNzCV[j*2] );
+        }
+    }
+    if ( false && validate_nnz!=nnz ){
+        printf("%d of %s, validate_nnz = %d, nnz = %d\n", __LINE__,__FILE__,
+                validate_nnz, nnz);
+    }
+    assert(validate_nnz==nnz);
+    int64_t acc_col = 0;
+    for (int j=0; j<=sms; ++j){
+        acc_col += col_st[j].size();
+    }
+
+
     est_fp = int64_t(nnz)*k;
     // shadow_b_bytes is identical to gpuX_bytes when perform v9
     // so dl.gpuX_bytes can be seen shadow_b_bytes when v9
@@ -114,6 +150,21 @@ void Mat::dataVolume_est2(){
                    grouped_tailSeg_bytes +
                    next_seg_bytes;    
         
+    est_ld_bytes_tiling_ideal = est_ld_bytes2 +
+                   segVoMap_bytes +
+                   n_col_sum*k*4 +
+                   grouped_tailSeg_bytes +
+                   next_seg_bytes;    
+    
+    est_ld_bytes_tiling_sm_ideal = est_ld_bytes2 +
+                   segVoMap_bytes +
+                   acc_col*k*4 +
+                   grouped_tailSeg_bytes +
+                   next_seg_bytes;    
+
+    // acc_col should be less than n_col_sum
+    if (false)  printf("%d of %s, n_col_sum = %d, acc_col = %d\n",__LINE__,__FILE__,n_col_sum,acc_col);
+    
     est_st_bytes = dl.gpuC_bytes;
 }
 void Mat::dataVolume_est(){
@@ -359,6 +410,7 @@ void Mat::csr2tile(){
         int seg_head_sm = 0;
         int seg_tail_sm;
         int validate_nnz = 0;
+
         // assign segs to each sm bucket
         for (int i=0; i<n_sm; ++i){
             next_seg.push_back( seg_head_sm );
@@ -375,6 +427,7 @@ void Mat::csr2tile(){
                     __LINE__,__FILE__, i,seg_head_sm,grouped_tailSeg.back());
             seg_head_sm = seg_tail_sm;
         }
+        if (false) printf("%d of %s, normal_nnz = %d\n", __LINE__,__FILE__,validate_nnz);
         
         // the last bucket is used for workload balance among SMs 
         // if seg_head_sm==n_segs, then n_segs==seg_head_sm
