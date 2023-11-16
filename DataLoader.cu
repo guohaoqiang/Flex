@@ -196,8 +196,9 @@ DataLoader::cuda_alloc_cpy()
 
               if ( opt_debug )
                 cpuX.push_back(1);
-              else
+              else{
                 cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
+              }
             }
         }
     }

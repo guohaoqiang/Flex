@@ -79,6 +79,7 @@ void Mat::transfer2(){
      CMALC( segPtr ); CMALC( segNzRCIdx ); CMALC( segNzRowIdx ); CMALC( segNzColIdx ); 
      CMALC( vals ); CMALC( voMp ); CMALC( segVoMap ); 
      CMALC( grouped_tailSeg ); CMALC( next_seg );
+     CMALC( seg_rowPtr ); CMALC( segNzCV );
 #   undef CMALC
 
     // transfer data to device
@@ -88,6 +89,9 @@ void Mat::transfer2(){
     cudaMemcpy(vals_dev, newVals.data(), newVals.size()*sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(segPtr_dev, segPtr.data(), segPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(segVoMap_dev, segVoMap.data(), segVoMap.size()*sizeof(int), cudaMemcpyHostToDevice);
+    
+    cudaMemcpy(seg_rowPtr_dev, seg_rowPtr.data(), seg_rowPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(segNzCV_dev, segNzCV.data(), segNzCV.size()*sizeof(float), cudaMemcpyHostToDevice);
     
     cudaMemcpy(voMp_dev, voMp.data(), voMp.size()*sizeof(int), cudaMemcpyHostToDevice);
     if (dl.vertex_order_abbr != "OVO"){
@@ -100,12 +104,16 @@ void Mat::dataVolume_est2(){
     est_fp = int64_t(nnz)*k;
     // shadow_b_bytes is identical to gpuX_bytes when perform v9
     // so dl.gpuX_bytes can be seen shadow_b_bytes when v9
-    est_ld_bytes = int64_t(segNzRowIdx_bytes) + 
-                    segNzColIdx_bytes + 
-                    vals_bytes + 
-                    dl.gpuX_bytes +
-                    segPtr_bytes + 
-                    segVoMap_bytes;
+    int64_t est_ld_bytes1 = int64_t(segNzRowIdx_bytes) + segNzColIdx_bytes + 
+                    vals_bytes + segPtr_bytes; 
+    int64_t est_ld_bytes2 = int64_t(segNzCV_bytes) + seg_rowPtr_bytes;
+    
+    est_ld_bytes = est_ld_bytes2 +
+                   segVoMap_bytes +
+                   dl.gpuX_bytes +
+                   grouped_tailSeg_bytes +
+                   next_seg_bytes;    
+        
     est_st_bytes = dl.gpuC_bytes;
 }
 void Mat::dataVolume_est(){
@@ -226,6 +234,8 @@ void Mat::sortSegs(){
 	std::vector<float> newVals1;
 	std::vector<unsigned int> segVoMap1;
 
+	std::vector<float> segNzCV1;
+	std::vector<int> seg_rowPtr1;
     // DFS reorder segs
     // explore L1 reuse
     vector<bool> visited(n_segs,false);
@@ -246,12 +256,22 @@ void Mat::sortSegs(){
             segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
             
             newVals1.push_back(newVals[i]);
+            
+            segNzCV1.push_back(segNzCV[2*i]);
+            segNzCV1.push_back(segNzCV[2*i+1]);
     
         }        
         segPtr1.push_back(segPtr1.back()+seg_nnz);
         for (int i=0; i<tm; ++i){
             segVoMap1.push_back(segVoMap[node*tm+i]);
         }
+        
+        if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
+        else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
+        for (int i=0; i<tm; ++i){
+            seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
+        }
+        
         while ( !g[node].empty() ){
 
             auto nb = g[node].top();
@@ -272,12 +292,20 @@ void Mat::sortSegs(){
             segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
             
             newVals1.push_back(newVals[i]); 
+            
+            segNzCV1.push_back(segNzCV[2*i]);
+            segNzCV1.push_back(segNzCV[2*i+1]);
         } 
         segPtr1.push_back(segPtr1.back()+seg_nnz);
         for (int i=0; i<tm; ++i){
             segVoMap1.push_back(segVoMap[node*tm+i]);
         }
        
+        if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
+        else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
+        for (int i=0; i<tm; ++i){
+            seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
+        }
     }
 
 	assert( segPtr.size()==segPtr1.size() );
@@ -286,6 +314,8 @@ void Mat::sortSegs(){
 	assert( segNzColIdx.size()==segNzColIdx1.size() );
 	assert( newVals.size()==newVals1.size() );
 	assert( segVoMap.size()==segVoMap1.size() );
+    assert( segNzCV.size()==segNzCV1.size() );
+    assert( seg_rowPtr.size()==seg_rowPtr1.size() );
       
 	swap(segPtr, segPtr1);
 	swap(segNzRCIdx, segNzRCIdx1);
@@ -293,6 +323,8 @@ void Mat::sortSegs(){
 	swap(segNzColIdx, segNzColIdx1);
 	swap(newVals, newVals1);
 	swap(segVoMap, segVoMap1);
+    swap(segNzCV, segNzCV1);
+    swap(seg_rowPtr, seg_rowPtr1);
 }
 void Mat::csr2tile(){
 	
@@ -391,7 +423,11 @@ void Mat::csr2seg_Cmajor(int ridx){
 
 	// keep track of the cols in each row
 	std::vector<int> cOffset(tm, 0);
-	
+
+    // {col, val}, for kernel v31 
+    std::vector<std::vector<std::pair<int,float>>> segcv(tm, std::vector<std::pair<int,float>>()); 
+
+
     int dif = 0.1*nnz_limit; 
     int nnzInSeg = 0;
     int nnz_cur_panel = rowPtr[rowEnd] - rowPtr[rowStart];    
@@ -416,6 +452,8 @@ void Mat::csr2seg_Cmajor(int ridx){
                 segNzRowIdx.push_back(i-rowStart);
                 segNzColIdx.push_back(j);
                 
+                segcv[i-rowStart].push_back({j,vals[c]}); // for v31 kernel
+
                 segNzRCIdx.push_back(i-rowStart); 
                 segNzRCIdx.push_back(j);
                 newVals[pos++] = vals[c];
@@ -429,7 +467,21 @@ void Mat::csr2seg_Cmajor(int ridx){
             }
         }
         if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
-         
+        
+            // for kernel v31
+            if ( !seg_rowPtr.empty() ) seg_rowPtr.push_back( seg_rowPtr.back() + 0 );
+            else seg_rowPtr.push_back( 0 );
+            
+            for ( int i=0; i<tm; ++i ){
+                seg_rowPtr.push_back( seg_rowPtr.back() + segcv[i].size() );
+                for ( auto &p:segcv[i] ){
+                    segNzCV.push_back((float)p.first); // col of the nz is stored in float
+                    segNzCV.push_back(p.second);
+                }
+                segcv[i].clear();
+            }
+
+
             aux_seg.push({ ridx, segPtr.size()-1 }); // {seg_row, seg_idx}
             id2r[segPtr.size()-1] = ridx;
             count_segs[ridx]++;

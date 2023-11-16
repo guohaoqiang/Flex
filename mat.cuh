@@ -41,6 +41,10 @@ class Mat_POD{
 	int* segNzColIdx_dev; 
 	int* grouped_tailSeg_dev; 
 	int* next_seg_dev; 
+    // kernel v31
+    int* seg_rowPtr_dev;
+    float* segNzCV_dev;
+
 
     // ge-spmm
     unsigned int* csr_rowPtr_dev;
@@ -91,7 +95,10 @@ class Mat : public Mat_POD{
     std::queue<pair<int,int>> aux_seg;
     std::unordered_map<int,int> count_segs;
     std::unordered_map<int,vector<int>> cols_seg;  // {seg_idx, colidx sequences}
-    
+   
+    // kernel v31
+    std::vector<int> seg_rowPtr;
+    std::vector<float> segNzCV;
 
     int nnz_limit;
 	int segPtr_bytes = 0; 
@@ -102,6 +109,8 @@ class Mat : public Mat_POD{
     int grouped_tailSeg_bytes;
     int next_seg_bytes;
     int64_t atomic_op;
+    int seg_rowPtr_bytes;
+    int segNzCV_bytes;
     
     int64_t est_fp = 0;
     int64_t est_ld_bytes = 0;
@@ -145,6 +154,9 @@ class Mat : public Mat_POD{
       cuda_freez(voMp_dev);
       cuda_freez(grouped_tailSeg_dev);
       cuda_freez(next_seg_dev);
+      
+      cuda_freez(segNzCV_dev);
+      cuda_freez(seg_rowPtr_dev);
     }
     void freeMatGPU(){
       cuda_freez(tileNnz_dev);

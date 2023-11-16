@@ -3505,6 +3505,418 @@ void flexspmm_cuda_wo_pre_w_vec_v30(){
         timing_end();
 }
 
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_k4_vec1_v31(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x>>5; //threadIdx.x / 32;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    //const int th_p_row = 4;
+    const int row_id = lane_id>>2; //lane_id / th_p_row; // 4 threads process a row
+    int c_col = lane_id & 0x3; //lane_id % th_p_row;
+
+
+    __shared__ int seg_idx[2];
+    uint32_t sm_id = smid_get();
+
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    // the sentinel tile-seg of the nsi-th SM
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+        int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+        __syncwarp();
+        if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+        __syncwarp();
+
+        if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+ 
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+       
+        // visit all rows of the segment
+        // step, 32 / th_p_row
+        for ( int r_idx = row_id; r_idx<tm; r_idx += 8 ){
+            // the global idx of the first non-zero of this tile-seg 
+            //int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ];
+
+            
+            int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
+            int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
+            
+            float res = 0;
+            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+             
+               // column & val 
+               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+               
+               float bv = md.shadow_b_dev[ (int)cv.x*md.k + c_col ];
+               res += cv.y * bv; 
+               
+            }
+            
+            int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            
+            // store results back  
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col ], res);
+                }else{
+                    md.mat_c_dev[ addr + c_col ] = res;
+                }
+            }
+             
+        } // end tile-seg row loop
+    } // end tile-segs loops
+    
+        timing_end();
+}
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_k8_vec2_v32(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x>>5; //threadIdx.x / 32;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    //const int th_p_row = 4;
+    const int row_id = lane_id>>2; //lane_id / th_p_row; // 4 threads process a row
+    int c_col = lane_id & 0x3; //lane_id % th_p_row;
+
+
+    __shared__ int seg_idx[2];
+    uint32_t sm_id = smid_get();
+
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    // the sentinel tile-seg of the nsi-th SM
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+        int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+        __syncwarp();
+        if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+        __syncwarp();
+
+        if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+ 
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+       
+        // visit all rows of the segment
+        // step, 32 / th_p_row
+        for ( int r_idx = row_id; r_idx<tm; r_idx += 8 ){
+            // the global idx of the first non-zero of this tile-seg 
+            //int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ];
+
+            
+            int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
+            int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
+            
+            float res[2]{};
+            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+             
+               // column & val 
+               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+               
+               float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
+               
+               float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ c_col ];
+               
+               res[0] += cv.y * b_vec.x; 
+               if ( c_col*2+1 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+               }
+               
+            }
+            
+            int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            
+            // store results back  
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col*2 ], res[0]);
+                    if ( c_col*2+1 < md.k )
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*2 + 1 ], res[1]);
+                }else{
+                    md.mat_c_dev[ addr + c_col*2 ] = res[0];
+                    if ( c_col*2+1 < md.k ){
+                        md.mat_c_dev[ addr + c_col*2 + 1 ] = res[1];
+                    }
+                }
+            }
+             
+        } // end tile-seg row loop
+    } // end tile-segs loops
+    
+        timing_end();
+}
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_k16_vec4_v33(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x>>5; //threadIdx.x / 32;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    //const int th_p_row = 4;
+    const int row_id = lane_id>>2; //lane_id / th_p_row; // 4 threads process a row
+    int c_col = lane_id & 0x3; //lane_id % th_p_row;
+
+
+    __shared__ int seg_idx[2];
+    uint32_t sm_id = smid_get();
+
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    // the sentinel tile-seg of the nsi-th SM
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+        int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+        __syncwarp();
+        if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+        __syncwarp();
+
+        if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+ 
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+       
+        // visit all rows of the segment
+        // step, 32 / th_p_row
+        for ( int r_idx = row_id; r_idx<tm; r_idx += 8 ){
+            // the global idx of the first non-zero of this tile-seg 
+            //int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ];
+
+            
+            int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
+            int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
+            
+            float res[4]{};
+            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+             
+               // column & val 
+               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+               
+               float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
+               
+               float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
+               
+               res[0] += cv.y * b_vec.x; 
+               if ( c_col*4+3 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+                    res[2] += cv.y * b_vec.z; 
+                    res[3] += cv.y * b_vec.w; 
+               }else if ( c_col*4+2 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+                    res[2] += cv.y * b_vec.z; 
+               }else if ( c_col*4+1 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+               } 
+              
+            }
+            
+            int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            
+            // store results back  
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col*4 ], res[0]);
+                    if ( c_col*4+3 < md.k ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[3]);
+                    }else if ( c_col*4+2 < md.k ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
+                    }else if ( c_col*4+1 < md.k ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
+                    }
+                }else{
+                    if ( c_col*4+3 < md.k ){
+                        //md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                        //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
+                        //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[3];
+                        float* mat_c = &md.mat_c_dev[ addr ];
+                        float4 vect4_c = {res[0], res[1], res[2], res[3]};
+                        reinterpret_cast<float4*>(mat_c)[ c_col ] = vect4_c;
+                    }else if ( c_col*4+2 < md.k ){
+                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                        md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
+                    }else if ( c_col*4+1 < md.k ){
+                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                    }else{
+                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                    }
+                }
+            }
+             
+        } // end tile-seg row loop
+    } // end tile-segs loops
+    
+        timing_end();
+}
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_k32_vec4_v34(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x>>5; //threadIdx.x / 32;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    //const int th_p_row = 8;
+    const int row_id = lane_id>>3; //lane_id / th_p_row; // 8 threads process a row
+    int c_col = lane_id & 0x7; //lane_id % th_p_row;
+
+
+    __shared__ int seg_idx[2];
+    uint32_t sm_id = smid_get();
+
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    // the sentinel tile-seg of the nsi-th SM
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+        int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+        __syncwarp();
+        if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+        __syncwarp();
+
+        if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+ 
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+       
+        // visit all rows of the segment
+        // step, 32 / th_p_row
+        for ( int r_idx = row_id; r_idx<tm; r_idx += 4 ){
+            // the global idx of the first non-zero of this tile-seg 
+            //int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ];
+
+            
+            int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
+            int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
+            
+            float res[4]{};
+            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+             
+               // column & val 
+               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+               
+               float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
+               
+               float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
+               
+               res[0] += cv.y * b_vec.x; 
+               if ( c_col*4+3 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+                    res[2] += cv.y * b_vec.z; 
+                    res[3] += cv.y * b_vec.w; 
+               }else if ( c_col*4+2 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+                    res[2] += cv.y * b_vec.z; 
+               }else if ( c_col*4+1 < md.k ){
+                    res[1] += cv.y * b_vec.y; 
+               } 
+              
+            }
+            
+            int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            
+            // store results back  
+            if ( actual_row<md.m ){
+                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+                int addr = actual_row*md.k;
+                
+                if ( atomicORnot>>31 ){
+                    atomicAdd( &md.mat_c_dev[ addr + c_col*4 ], res[0]);
+                    if ( c_col*4+3 < md.k ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[3]);
+                    }else if ( c_col*4+2 < md.k ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
+                    }else if ( c_col*4+1 < md.k ){
+                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
+                    }
+                }else{
+                    if ( c_col*4+3 < md.k ){
+                        //md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                        //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
+                        //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[3];
+                        float* mat_c = &md.mat_c_dev[ addr ];
+                        float4 vect4_c = {res[0], res[1], res[2], res[3]};
+                        reinterpret_cast<float4*>(mat_c)[ c_col ] = vect4_c;
+                    }else if ( c_col*4+2 < md.k ){
+                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                        md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
+                    }else if ( c_col*4+1 < md.k ){
+                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                    }else{
+                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                    }
+                }
+            }
+             
+        } // end tile-seg row loop
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
 
 GPU_Info
 print_gpu_and_kernel_info()
@@ -3724,9 +4136,9 @@ void run_ge_spmm(DataLoader& input_vo){
     #define PUSH_KERNEL(kb,k) \
     {  kernels.emplace_back(info.GET_INFO((k)),#kb); }
 
-//#define LESS32 // for k in (0,32)
+#define LESS32 // for k in (0,32)
 //#define LESS64 // for k in [32,64)
-#define GRE64 // for k>=64
+//#define GRE64 // for k>=64
 
 #ifdef LESS32
     PUSH_KERNEL(spmm_test0,spmm_test0);
@@ -3956,7 +4368,7 @@ void run(DataLoader& input_vo){
     //DataLoaderRcm input_rcm(input_vo);
     DataLoaderGorder input_gorder(input_vo);
 
-    const bool opt_vary_grid_size = true;
+    const bool opt_vary_grid_size = false;
     constexpr bool show_insn_shared = false;
     constexpr bool show_insn_local = false;
 
@@ -3972,7 +4384,7 @@ void run(DataLoader& input_vo){
     //
     const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
    
-    bool roofline = true; 
+    bool roofline = false; 
     if ( roofline ){
         NPerf_metric_collect("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
   /****************************************** colect data for roofline ***************************************/
@@ -4010,6 +4422,7 @@ void run(DataLoader& input_vo){
     NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_st.sum");
+    NPerf_metric_collect("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct");
     if ( show_insn_shared )
       {
         NPerf_metric_collect("sm__sass_inst_executed_op_shared_ld.sum");
@@ -4099,7 +4512,7 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_vec4_v29
 // v27: w/o buffering, sm-based seg allocation, vec2, 
 // v28: w/o buffering, sm-based seg allocation, vec2, a tile-seg per warp 
-#define flex_kernel flexspmm_cuda_w_vec2_v27
+//#define flex_kernel flexspmm_cuda_w_vec2_v27
 
 // v12: double buffering, rows-based seg allocation, w/o vec 
 // v23: double buffering, sm-based seg allocation, w/o vec 
@@ -4123,6 +4536,16 @@ void run(DataLoader& input_vo){
 // v19: double buffering, a block process contiguous layout segs, vec r and c of sparse input 
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
+// v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k<=4  
+//#define flex_kernel flexspmm_cuda_k4_vec1_v31
+// v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>4 && k<=8  
+//#define flex_kernel flexspmm_cuda_k8_vec2_v32
+// v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>8 && k<=16  
+//#define flex_kernel flexspmm_cuda_k16_vec4_v33
+// v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k==32  
+#define flex_kernel flexspmm_cuda_k32_vec4_v34
+    
+    
     // Vector size of instructions that load B matrix elements.
     map<string,int> k_prop_vec_b
       { { "flexspmm_cuda_w_vec4_v11", 4 },
@@ -4131,13 +4554,17 @@ void run(DataLoader& input_vo){
         { "flexspmm_cuda_w_vec2_v27", 2 },
         { "flexspmm_cuda_w_vec4_v29", 4 },
         { "flexspmm_cuda_w_vec2_v28", 2 },
+        { "flexspmm_cuda_k8_vec2_v32",2},
+        { "flexspmm_cuda_k16_vec4_v33",4}
       };
 
     // Kernels that use a vec2 to load row/column pairs.
     set<string> k_prop_vec2_rc { "flexspmm_cuda_w_pre_w_vec_v14" , "flexspmm_cuda_wo_pre_w_vec_v21", 
                                 "flexspmm_cuda_wo_pre_w_vec_v18", "flexspmm_cuda_wo_pre_w_vec_v20",
                                 "flexspmm_cuda_w_vec2_v27", "flexspmm_cuda_w_vec2_v28",
-                                "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_wo_pre_w_vec_v30"};
+                                "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_wo_pre_w_vec_v30",
+                                "flexspmm_cuda_k4_vec1_v31", "flexspmm_cuda_k8_vec2_v32", "flexspmm_cuda_k16_vec4_v33"
+                                };
 
     // RC Direct means that all threads in a warp load the same RC and
     // wht elements from global memory. Otherwise, Different threads
@@ -4147,7 +4574,8 @@ void run(DataLoader& input_vo){
       { "flexspmm_cuda_wo_pre_w_vec_v18", "flexspmm_cuda_wo_pre_w_vec_v20" , 
           "flexspmm_cuda_wo_pre_w_vec_v21", "flexspmm_cuda_w_vec4_v26",
           "flexspmm_cuda_w_vec2_v27", "flexspmm_cuda_w_vec2_v28",
-          "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_wo_pre_w_vec_v30"
+          "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_wo_pre_w_vec_v30",
+         "flexspmm_cuda_k4_vec1_v31", "flexspmm_cuda_k8_vec2_v32", "flexspmm_cuda_k16_vec4_v33"
       };
     
    
@@ -4155,10 +4583,17 @@ void run(DataLoader& input_vo){
     set<string> atomic_seg_idx
       { "flexspmm_cuda_wo_pre_w_vec_v21", "flexspmm_cuda_wo_pre_v22",
         "flexspmm_cuda_w_vec4_v26", "flexspmm_cuda_w_vec2_v27", 
-        "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_w_vec2_v28"};
+        "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_w_vec2_v28",
+        "flexspmm_cuda_wo_pre_w_vec_v30",
+        "flexspmm_cuda_k4_vec1_v31", "flexspmm_cuda_k8_vec2_v32", "flexspmm_cuda_k16_vec4_v33"
+      };
 
     // a seg-tile per warp
-    set<string> wp_seg_tile{"flexspmm_cuda_wo_pre_w_vec_v30", "flexspmm_cuda_w_vec4_v29", "flexspmm_cuda_w_vec2_v28"};
+    set<string> wp_seg_tile
+        { "flexspmm_cuda_wo_pre_w_vec_v30", "flexspmm_cuda_w_vec4_v29", 
+          "flexspmm_cuda_w_vec2_v28",
+          "flexspmm_cuda_k4_vec1_v31", "flexspmm_cuda_k8_vec2_v32", "flexspmm_cuda_k16_vec4_v33"
+        };
     
 
 #ifdef CUBE4X4
@@ -4353,7 +4788,7 @@ void run(DataLoader& input_vo){
                 grid_sizes.push_back( mat.n_segs );
             }
         }
-        //grid_sizes.push_back( num_sm*64 );
+        grid_sizes.push_back( num_sm*32 );
 
         // Allocate storage for timing data.
         //
@@ -4398,7 +4833,6 @@ void run(DataLoader& input_vo){
             KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
             //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); //v24
             
-            //printf("%d of %s------\n",__LINE__,__FILE__);
             //
             // Until NPerf_metrics_off is fixed event timing won't work.
 
@@ -4473,9 +4907,6 @@ void run(DataLoader& input_vo){
 
               table.entry("Ord", "%3s", input.vertex_order_abbr);
               fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
-              //table.entry
-              //  ("Tile", "%-6s",
-              //   to_string(spMats[id].tm)+"x"+to_string(spMats[id].tn));
               table.entry("tm", "%3d", spMats[id].tm);
               fprintf(tile_nperf,"%3d,", spMats[id].tm);
 
@@ -4522,10 +4953,11 @@ void run(DataLoader& input_vo){
               const double nz_p_t = double(mat.nnz) / n_tiles;
               if (false) table.entry("nz/t", "%5.2f", nz_p_t);
               const double nz_p_seg = double(mat.nnz) / n_segs;
-              
-              table.entry("nz/seg", "%7.2f", nz_p_seg);
-              fprintf(tile_nperf,"%7.2f,", nz_p_seg);
-
+             
+              if (false){
+                table.entry("nz/seg", "%7.2f", nz_p_seg);
+                fprintf(tile_nperf,"%7.2f,", nz_p_seg);
+              }
               const double n_t_rows = double(mat.m) / mat.tm;
 
               const double nz_p_tr = double(mat.nnz) / n_t_rows;
@@ -4548,6 +4980,28 @@ void run(DataLoader& input_vo){
               const double et_seconds = NPerf_kernel_et_get();
               table.entry( "t/µs", "%7.1f", et_seconds * 1e6 );
               fprintf(tile_nperf,"%7.1f,", et_seconds * 1e6 );
+              
+              table.entry( "tL1/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/25935 * 1e6 );
+              fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/25935 * 1e6 );
+              
+              table.entry( "tL2/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
+              fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
+              
+              table.entry( "tHBM/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              
+              table.entry
+                ( "L2/", "%4.2f",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") ) 
+                  / (1.0*(mat.est_ld_bytes + mat.est_st_bytes)) );
+
+              fprintf(tile_nperf, "%4.2f,",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
+                  / (1.0*(mat.est_ld_bytes + mat.est_st_bytes)) );
+              
+              
               const bool more_timing = false;
               if ( more_timing )
                 {
@@ -4587,31 +5041,39 @@ void run(DataLoader& input_vo){
               const bool v_vec2_rc = k_prop_vec2_rc.contains(aki.name_base);
               const int vec_b_sz = max(1,k_prop_vec_b[aki.name_base]);
 
-              const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
-
-              // Loads per nz. ( r , c, edge weight)
-              const int n_ld_nz = 3;
-              const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
-
+              
               const int n_ld_b_elt = 1; // Loads per B matrix element.
               const double n_ld_insn_b_elt = double(n_ld_b_elt) / vec_b_sz;
-
-              const double seg_idx_update = atomic_seg_idx.contains(aki.name_base) ? 1 : 0;
+              const double seg_idx_update = atomic_seg_idx.contains(aki.name_base) ? 1 : 0; // next_seg
               const double c_loads = mat.atomic_op * 1.0 / mat.nnz / mat.k;
-             
+              
+              if ( false ){
+                  const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
+                  // Loads per nz. ( r , c, edge weight)
+                  const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
+                  const int n_ld_nz = 3; 
+                 
+              } 
+              const int n_ld_seg = mat.tm+1 + mat.tm+1;  // Loads per tile-segment. (segVoMap + grouped_tailSeg + seg_rowPtr)
+              // Loads per nz. ( col, edge weight)
+              const int n_ld_insn_nz = v_vec2_rc ? 1 : 2; // here I don't distinguish vectorizing RC from vectorizing CV
+              const int n_ld_nz = 2; 
+
               // item1 (seg/tile -level loads):    (n_ld_seg+seg_idx_update) / nz_p_seg 
               // item2 (non-zero loads):    n_ld_insn_nz / ( k_prop_rc_direct.contains(aki.name_base) ? 1.0 : nz_p_seg / ceil(nz_p_seg/32) ) 
-              // enhanced by vectorized B:  (item1 + item2) / n_b_elt_p_thd
+              // enhanced by vectorizing B:  (item1 + item2) / n_b_elt_p_thd
               // item3 (B is enhanced by reuse):    n_ld_insn_b_elt / nz_p_toc 
               // item4 (atomic update C):  c_loads 
-              const double n_ld_p_madd =
-                (   (n_ld_seg+seg_idx_update) / nz_p_seg
-                  + n_ld_insn_nz /
-                    ( k_prop_rc_direct.contains(aki.name_base)
-                      ? 1.0 : nz_p_seg / ceil(nz_p_seg/32) ) )
-                / n_b_elt_p_thd
-                + n_ld_insn_b_elt / nz_p_toc
-                + c_loads;
+              const double n_ld_p_madd = 
+                  ( 1.0*(n_ld_seg+seg_idx_update) / nz_p_seg
+                      + 1.0*n_ld_insn_nz /
+                        ( k_prop_rc_direct.contains(aki.name_base)
+                          ? 1.0 : 1.0*nz_p_seg / ceil(nz_p_seg/32) ) )
+                    / n_b_elt_p_thd
+                    + 1.0*n_ld_insn_b_elt / nz_p_toc
+                    + c_loads;
+                   
+
 
               table.entry
                 ( "G", "%4.1f",
@@ -4624,6 +5086,13 @@ void run(DataLoader& input_vo){
               table.entry( "GC", "%4.1f", n_ld_p_madd);
               fprintf(tile_nperf, "%4.1f,", n_ld_p_madd);
 
+
+              table.entry( "pG", "%4.1f", 1.0*mat.est_ld_bytes/4/mat.est_fp);
+              fprintf(tile_nperf, "%4.1f,", 1.0*mat.est_ld_bytes/4/mat.est_fp);
+
+              table.entry( "LDe", "%4.1f", NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
+              fprintf(tile_nperf, "%4.1f,",NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
+              
               if ( show_insn_local )
                 table.entry
                   ( "L", "%4.1f",
