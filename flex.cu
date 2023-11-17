@@ -4537,13 +4537,13 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
 // v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k<=4  
-//#define flex_kernel flexspmm_cuda_k4_vec1_v31
-// v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>4 && k<=8  
+#define flex_kernel flexspmm_cuda_k4_vec1_v31
+//v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>4 && k<=8  
 //#define flex_kernel flexspmm_cuda_k8_vec2_v32
 // v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>8 && k<=16  
 //#define flex_kernel flexspmm_cuda_k16_vec4_v33
 // v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k==32  
-#define flex_kernel flexspmm_cuda_k32_vec4_v34
+//#define flex_kernel flexspmm_cuda_k32_vec4_v34
     
     
     // Vector size of instructions that load B matrix elements.
@@ -4980,15 +4980,21 @@ void run(DataLoader& input_vo){
               const double et_seconds = NPerf_kernel_et_get();
               table.entry( "t/µs", "%7.1f", et_seconds * 1e6 );
               fprintf(tile_nperf,"%7.1f,", et_seconds * 1e6 );
-              
-              table.entry( "tL1/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/25935 * 1e6 );
-              fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/25935 * 1e6 );
-              
-              table.entry( "tL2/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
-              fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
-              
-              table.entry( "tHBM/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              if (false){ 
+                  table.entry( "tL1/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/25935 * 1e6 );
+                  fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/25935 * 1e6 );
+                  
+                  table.entry( "tL2/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
+                  fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
+              } 
+              table.entry( "HBM/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
               fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              
+              table.entry( "tHBM/µs", "%7.2f", 1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              
+              table.entry( "smHBM/µs", "%8.2f", 1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)/1e9/2024 * 1e6 );
+              fprintf(tile_nperf,"%8.2f,", 1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)/1e9/2024 * 1e6 );
               
               table.entry
                 ( "L2/", "%4.2f",
@@ -5001,6 +5007,27 @@ void run(DataLoader& input_vo){
                     + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
                   / (1.0*(mat.est_ld_bytes + mat.est_st_bytes)) );
               
+              table.entry
+                ( "tL2/", "%4.2f",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") ) 
+                  / (1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes)) );
+
+              fprintf(tile_nperf, "%4.2f,",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
+                  / (1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes)) );
+              
+              table.entry
+                ( "smL2/", "%5.2f",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") ) 
+                  / (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)) );
+
+              fprintf(tile_nperf, "%5.2f,",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
+                  / (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)) );
               
               const bool more_timing = false;
               if ( more_timing )
