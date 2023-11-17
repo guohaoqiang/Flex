@@ -102,9 +102,10 @@ void Mat::transfer2(){
 }
 void Mat::dataVolume_est2(){
   
+/*********** compute B rows to be loaded for each sm **************************/
     int64_t validate_nnz = 0; 
     vector<unordered_set<int>> col_st(sms+1, unordered_set<int>());  
-    
+    // the first SM buckets 
     for (int i=0; i<sms; ++i){
         
         for (int j=seg_rowPtr[ next_seg[ i ]*(tm+1) ]; 
@@ -113,10 +114,7 @@ void Mat::dataVolume_est2(){
             col_st[i].insert( (int)segNzCV[j*2] );
         }
     }
-    if ( false && validate_nnz!=nnz ){
-        printf("%d of %s, validate_nnz = %d, nnz = %d\n", __LINE__,__FILE__,
-                validate_nnz, nnz);
-    }
+    // the last bucket, which is used for workload balance
     for (int i=next_seg[sms]; i<n_segs; ++i){
        
        for (int ii=0; ii<tm; ++ii) 
@@ -126,16 +124,12 @@ void Mat::dataVolume_est2(){
             col_st[sms].insert( (int)segNzCV[j*2] );
         }
     }
-    if ( false && validate_nnz!=nnz ){
-        printf("%d of %s, validate_nnz = %d, nnz = %d\n", __LINE__,__FILE__,
-                validate_nnz, nnz);
-    }
     assert(validate_nnz==nnz);
     int64_t acc_col = 0;
     for (int j=0; j<=sms; ++j){
         acc_col += col_st[j].size();
     }
-
+/******************************************************************************/
 
     est_fp = int64_t(nnz)*k;
     // shadow_b_bytes is identical to gpuX_bytes when perform v9
