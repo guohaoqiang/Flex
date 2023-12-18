@@ -3,7 +3,7 @@
 rm flex-tile-nperf.csv
 #rm ge_spmm_roofline.csv
 
-k=4
+k=32
 ./flex ./data/pubmed.csv $k
 ./flex ./data/flickr.csv $k
 ./flex ./data/reddit.csv $k

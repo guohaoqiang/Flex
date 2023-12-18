@@ -4537,13 +4537,13 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
 // v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k<=4  
-#define flex_kernel flexspmm_cuda_k4_vec1_v31
+//#define flex_kernel flexspmm_cuda_k4_vec1_v31
 //v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>4 && k<=8  
 //#define flex_kernel flexspmm_cuda_k8_vec2_v32
 // v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>8 && k<=16  
 //#define flex_kernel flexspmm_cuda_k16_vec4_v33
 // v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k==32  
-//#define flex_kernel flexspmm_cuda_k32_vec4_v34
+#define flex_kernel flexspmm_cuda_k32_vec4_v34
     
     
     // Vector size of instructions that load B matrix elements.
@@ -4972,9 +4972,12 @@ void run(DataLoader& input_vo){
               const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
               // Worst-case: 1.  Ideal: Average degree.
 
-              table.entry("B-Re", "%4.2f", nz_p_toc);
-              fprintf(tile_nperf,"%4.2f,", nz_p_toc);
+              table.entry("B-Re1", "%5.2f", nz_p_toc);
+              fprintf(tile_nperf,"%5.2f,", nz_p_toc);
 
+              table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
+              fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
+              
               // Get and print elapsed time.
               //
               const double et_seconds = NPerf_kernel_et_get();
@@ -4987,6 +4990,29 @@ void run(DataLoader& input_vo){
                   table.entry( "tL2/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
                   fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/7621 * 1e6 );
               } 
+              
+            if (false){ 
+              table.entry( "rP/MB", "%6.2f", 1.0*(mat.seg_rowPtr_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.2f,", 1.0*(mat.seg_rowPtr_bytes)/1e6 );
+              
+              table.entry( "cv/MB", "%6.2f", 1.0*(mat.segNzCV_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.2f,", 1.0*(mat.segNzCV_bytes)/1e6 );
+            
+              table.entry( "x/MB", "%6.2f", 1.0*(mat.dl.gpuX_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.2f,", 1.0*(mat.dl.gpuX_bytes)/1e6 );
+            
+              table.entry( "c/MB", "%6.2f", 1.0*(mat.dl.gpuC_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.2f,", 1.0*(mat.dl.gpuC_bytes)/1e6 );
+             
+              table.entry( "vm/MB", "%6.4f", 1.0*(mat.segVoMap_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.4f,", 1.0*(mat.segVoMap_bytes)/1e6 );
+              
+              table.entry( "tl0/MB", "%6.4f", 1.0*(mat.grouped_tailSeg_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.4f,", 1.0*(mat.grouped_tailSeg_bytes)/1e6 );
+              
+              table.entry( "tl1/MB", "%6.4f", 1.0*(mat.next_seg_bytes)/1e6 );
+              fprintf(tile_nperf,"%6.4f,", 1.0*(mat.next_seg_bytes)/1e6 );
+            
               table.entry( "HBM/µs", "%7.2f", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
               fprintf(tile_nperf,"%7.2f,", 1.0*(mat.est_ld_bytes + mat.est_st_bytes)/1e9/2024 * 1e6 );
               
@@ -4995,7 +5021,18 @@ void run(DataLoader& input_vo){
               
               table.entry( "smHBM/µs", "%8.2f", 1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)/1e9/2024 * 1e6 );
               fprintf(tile_nperf,"%8.2f,", 1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)/1e9/2024 * 1e6 );
-              
+             
+              table.entry
+                ( "/raw", "%4.2f",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") ) 
+                  / (1.0*(mat.raw_ld_bytes + mat.est_st_bytes)) );
+
+              fprintf(tile_nperf, "%4.2f,",
+                  ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
+                    + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
+                  / (1.0*(mat.raw_ld_bytes + mat.est_st_bytes)) );
+
               table.entry
                 ( "L2/", "%4.2f",
                   ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
@@ -5028,6 +5065,27 @@ void run(DataLoader& input_vo){
                   ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
                     + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
                   / (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)) );
+              table.entry
+                ( "L1/MB", "%5.2f",
+                  (1.0*(mat.est_ld_bytes + mat.est_st_bytes))/1024/1024 );
+
+              fprintf(tile_nperf, "%5.2f,",
+                  (1.0*(mat.est_ld_bytes + mat.est_st_bytes))/1024/1024 );
+              
+              table.entry
+                ( "tL1/MB", "%6.2f",
+                  (1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes))/1024/1024 );
+
+              fprintf(tile_nperf, "%6.2f,",
+                  (1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes))/1024/1024 );
+              
+              table.entry
+                ( "smL2/MB", "%7.2f",
+                  (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes))/1024/1024 );
+
+              fprintf(tile_nperf, "%7.2f,",
+                  (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes))/1024/1024 ); 
+             }
               
               const bool more_timing = false;
               if ( more_timing )
@@ -5187,8 +5245,16 @@ void run(DataLoader& input_vo){
 
               // nD = 4/u + 12/k + (2+tm) * #segs * 4 / (k * #nz)
               // nD = 4/u + 12/k + (2+tm) * 4 / (#nz * k / #segs )
+              // double nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
+              // double u = 4.0 / ( nD - 12.0/mat.k - (2+mat.tm)*mat.n_segs*4.0 / (mat.nnz*mat.k) );
+              
+
+              // B reuse: 4/u
+              // A reuse: col + val, 8/k
+              // tile-level: ( group_info(2) * #sm + ( tile_rowPtr(tm+1) + voMap(tm) ) * #tiles ) * 4 / #ops 
+              // nD = 4/u + 8/k + ( 2*sm + (tm+1 + tm) * #tiles) * 4 / (k * #nz)  
               double nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
-              double u = 4.0 / ( nD - 12.0/mat.k - (2+mat.tm)*mat.n_segs*4.0 / (mat.nnz*mat.k) );
+              double u = 4.0 / ( nD - 8.0/mat.k - ( 2*num_sm + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k) );
               table.entry( "expBs", "%5.2f",u );
               fprintf(tile_nperf, "%5.2f,",u);
 

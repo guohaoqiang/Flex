@@ -125,7 +125,7 @@ void Mat::dataVolume_est2(){
         }
     }
     assert(validate_nnz==nnz);
-    int64_t acc_col = 0;
+    acc_col = 0;
     for (int j=0; j<=sms; ++j){
         acc_col += col_st[j].size();
     }
@@ -138,23 +138,26 @@ void Mat::dataVolume_est2(){
                     vals_bytes + segPtr_bytes; 
     int64_t est_ld_bytes2 = int64_t(segNzCV_bytes) + seg_rowPtr_bytes;
     
+    raw_ld_bytes = vals_bytes +
+                   dl.gpuX_bytes;
+
     est_ld_bytes = est_ld_bytes2 +
                    segVoMap_bytes +
                    dl.gpuX_bytes +
-                   grouped_tailSeg_bytes +
+                  grouped_tailSeg_bytes +
                    next_seg_bytes;    
         
     est_ld_bytes_tiling_ideal = est_ld_bytes2 +
-                   segVoMap_bytes +
-                   n_col_sum*k*4 +
-                   grouped_tailSeg_bytes +
-                   next_seg_bytes;    
+                                segVoMap_bytes +
+                                n_col_sum*k*4 +
+                                grouped_tailSeg_bytes +
+                                next_seg_bytes;    
     
     est_ld_bytes_tiling_sm_ideal = est_ld_bytes2 +
-                   segVoMap_bytes +
-                   acc_col*k*4 +
-                   grouped_tailSeg_bytes +
-                   next_seg_bytes;    
+                                   segVoMap_bytes +
+                                   acc_col*k*4 +
+                                   grouped_tailSeg_bytes +
+                                   next_seg_bytes;    
 
     // acc_col should be less than n_col_sum
     if (false)  printf("%d of %s, n_col_sum = %d, acc_col = %d\n",__LINE__,__FILE__,n_col_sum,acc_col);
