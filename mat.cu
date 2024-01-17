@@ -109,7 +109,7 @@ void Mat::dataVolume_est2(){
     for (int i=0; i<sms; ++i){
         
         for (int j=seg_rowPtr[ next_seg[ i ]*(tm+1) ]; 
-                j<seg_rowPtr[ grouped_tailSeg[ i ]*(tm+1) ]; ++j){
+                j<seg_rowPtr[ grouped_tailSeg[ i ]*(tm+1) -1]; ++j){
             validate_nnz++;
             col_st[i].insert( (int)segNzCV[j*2] );
         }
@@ -134,8 +134,9 @@ void Mat::dataVolume_est2(){
     est_fp = int64_t(nnz)*k;
     // shadow_b_bytes is identical to gpuX_bytes when perform v9
     // so dl.gpuX_bytes can be seen shadow_b_bytes when v9
-    int64_t est_ld_bytes1 = int64_t(segNzRowIdx_bytes) + segNzColIdx_bytes + 
-                    vals_bytes + segPtr_bytes; 
+    //int64_t est_ld_bytes1 = int64_t(segNzRowIdx_bytes) + segNzColIdx_bytes + 
+    //                vals_bytes + segPtr_bytes; 
+    
     int64_t est_ld_bytes2 = int64_t(segNzCV_bytes) + seg_rowPtr_bytes;
     
     raw_ld_bytes = vals_bytes +
@@ -375,7 +376,9 @@ void Mat::sortSegs(){
     swap(seg_rowPtr, seg_rowPtr1);
 }
 void Mat::csr2tile(){
-	
+
+    const int nnz_csr = rowPtr[m];    
+    
     bool print_bucket = false;
 	int tileRows = (m+tm-1)/tm;
 	for (int i=0; i<tileRows; ++i){
@@ -384,6 +387,7 @@ void Mat::csr2tile(){
 		//csr2regular(i);
         csr2seg_Cmajor(i);
 	} 
+    assert(nnz_csr ==seg_rowPtr.back());
     n_segs = segPtr.size()-1;
     if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
     bool seg_sort = false;
@@ -403,6 +407,7 @@ void Mat::csr2tile(){
         // according to #non zeros ( wkload per sm )
         // to balance workload, the last bucket is to offer segs when faster SMs are free   
         int nnz = newVals.size(); 
+        assert(nnz==nnz_csr);
         int wkload = nnz / n_sm; 
         int seg_head_sm = 0;
         int seg_tail_sm;
