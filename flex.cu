@@ -3555,28 +3555,29 @@ void flexspmm_cuda_k4_vec1_v31(){
             int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
             int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
             
-            float res = 0;
-            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
-             
-               // column & val 
-               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
-               
-               float bv = md.shadow_b_dev[ (int)cv.x*md.k + c_col ];
-               res += cv.y * bv; 
-               
-            }
-            
             int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+            int addr = actual_row*md.k;
             
-            // store results back  
-            if ( actual_row<md.m ){
-                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
-                int addr = actual_row*md.k;
-                
-                if ( atomicORnot>>31 ){
-                    atomicAdd( &md.mat_c_dev[ addr + c_col ], res);
-                }else{
-                    md.mat_c_dev[ addr + c_col ] = res;
+            for ( int cc = c_col; cc<md.k; cc+=4 ){ 
+                float res = 0;
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                 
+                   // column & val 
+                   float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+                   
+                   float bv = md.shadow_b_dev[ (int)cv.x*md.k + cc ];
+                   res += cv.y * bv; 
+                   
+                }    
+                // store results back  
+                if ( actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc ], res);
+                    }else{
+                        md.mat_c_dev[ addr + cc ] = res;
+                    }
                 }
             }
              
@@ -3634,43 +3635,45 @@ void flexspmm_cuda_k8_vec2_v32(){
             
             int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
             int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
-            
-            float res[2]{};
-            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
-             
-               // column & val 
-               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
-               
-               float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
-               
-               float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ c_col ];
-               
-               res[0] += cv.y * b_vec.x; 
-               if ( c_col*2+1 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-               }
-               
-            }
-            
+            int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
             int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            int addr = actual_row*md.k;
             
-            // store results back  
-            if ( actual_row<md.m ){
-                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
-                int addr = actual_row*md.k;
+            for ( int cc = c_col; cc*2<md.k; cc+=8 ){ 
                 
-                if ( atomicORnot>>31 ){
-                    atomicAdd( &md.mat_c_dev[ addr + c_col*2 ], res[0]);
-                    if ( c_col*2+1 < md.k )
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*2 + 1 ], res[1]);
-                }else{
-                    md.mat_c_dev[ addr + c_col*2 ] = res[0];
-                    if ( c_col*2+1 < md.k ){
-                        md.mat_c_dev[ addr + c_col*2 + 1 ] = res[1];
+                float res[2]{};
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                 
+                   // column & val 
+                   float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+                   
+                   float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
+                   
+                   float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ cc ];
+                   
+                   res[0] += cv.y * b_vec.x; 
+                   if ( cc*2+1 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                   }
+                   
+                }
+                
+                
+                // store results back  
+                if ( actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc*2 ], res[0]);
+                        if ( cc*2+1 < md.k )
+                            atomicAdd( &md.mat_c_dev[ addr + cc*2 + 1 ], res[1]);
+                    }else{
+                        md.mat_c_dev[ addr + cc*2 ] = res[0];
+                        if ( cc*2+1 < md.k ){
+                            md.mat_c_dev[ addr + cc*2 + 1 ] = res[1];
+                        }
                     }
                 }
-            }
-             
+            } 
         } // end tile-seg row loop
     } // end tile-segs loops
     
@@ -3725,72 +3728,73 @@ void flexspmm_cuda_k16_vec4_v33(){
             
             int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
             int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
-            
-            float res[4]{};
-            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
-             
-               // column & val 
-               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
-               
-               float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
-               
-               float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
-               
-               res[0] += cv.y * b_vec.x; 
-               if ( c_col*4+3 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-                    res[2] += cv.y * b_vec.z; 
-                    res[3] += cv.y * b_vec.w; 
-               }else if ( c_col*4+2 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-                    res[2] += cv.y * b_vec.z; 
-               }else if ( c_col*4+1 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-               } 
-              
-            }
-            
+            int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
             int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            int addr = actual_row*md.k;
             
-            // store results back  
-            if ( actual_row<md.m ){
-                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
-                int addr = actual_row*md.k;
+            for ( int cc = c_col; cc*4<md.k; cc+=16 ){ 
+                float res[4]{};
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                 
+                   // column & val 
+                   float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+                   
+                   float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
+                   
+                   float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ cc ];
+                   
+                   res[0] += cv.y * b_vec.x; 
+                   if ( cc*4+3 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                        res[2] += cv.y * b_vec.z; 
+                        res[3] += cv.y * b_vec.w; 
+                   }else if ( cc*4+2 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                        res[2] += cv.y * b_vec.z; 
+                   }else if ( cc*4+1 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                   } 
+                  
+                }
                 
-                if ( atomicORnot>>31 ){
-                    atomicAdd( &md.mat_c_dev[ addr + c_col*4 ], res[0]);
-                    if ( c_col*4+3 < md.k ){
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[3]);
-                    }else if ( c_col*4+2 < md.k ){
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
-                    }else if ( c_col*4+1 < md.k ){
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
-                    }
-                }else{
-                    if ( c_col*4+3 < md.k ){
-                        //md.mat_c_dev[ addr + c_col*4 ] = res[0];
-                        //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
-                        //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
-                        //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[3];
-                        float* mat_c = &md.mat_c_dev[ addr ];
-                        float4 vect4_c = {res[0], res[1], res[2], res[3]};
-                        reinterpret_cast<float4*>(mat_c)[ c_col ] = vect4_c;
-                    }else if ( c_col*4+2 < md.k ){
-                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
-                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
-                        md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
-                    }else if ( c_col*4+1 < md.k ){
-                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
-                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                
+                // store results back  
+                if ( actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc*4 ], res[0]);
+                        if ( cc*4+3 < md.k ){
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res[1]);
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 2 ], res[2]);
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 3 ], res[3]);
+                        }else if ( cc*4+2 < md.k ){
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res[1]);
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 2 ], res[2]);
+                        }else if ( cc*4+1 < md.k ){
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res[1]);
+                        }
                     }else{
-                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        if ( cc*4+3 < md.k ){
+                            //md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                            //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                            //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
+                            //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[3];
+                            float* mat_c = &md.mat_c_dev[ addr ];
+                            float4 vect4_c = {res[0], res[1], res[2], res[3]};
+                            reinterpret_cast<float4*>(mat_c)[ cc ] = vect4_c;
+                        }else if ( cc*4+2 < md.k ){
+                            md.mat_c_dev[ addr + cc*4 ] = res[0];
+                            md.mat_c_dev[ addr + cc*4 + 1 ] = res[1];
+                            md.mat_c_dev[ addr + cc*4 + 2 ] = res[2];
+                        }else if ( cc*4+1 < md.k ){
+                            md.mat_c_dev[ addr + cc*4 ] = res[0];
+                            md.mat_c_dev[ addr + cc*4 + 1 ] = res[1];
+                        }else{
+                            md.mat_c_dev[ addr + cc*4 ] = res[0];
+                        }
                     }
                 }
-            }
-             
+            } 
         } // end tile-seg row loop
     } // end tile-segs loops
     
@@ -3845,68 +3849,151 @@ void flexspmm_cuda_k32_vec4_v34(){
             
             int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
             int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
+            int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+            int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            int addr = actual_row*md.k;
             
-            float res[4]{};
-            for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
-             
-               // column & val 
-               float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
-               
-               float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
-               
-               float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ c_col ];
-               
-               res[0] += cv.y * b_vec.x; 
-               if ( c_col*4+3 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-                    res[2] += cv.y * b_vec.z; 
-                    res[3] += cv.y * b_vec.w; 
-               }else if ( c_col*4+2 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-                    res[2] += cv.y * b_vec.z; 
-               }else if ( c_col*4+1 < md.k ){
-                    res[1] += cv.y * b_vec.y; 
-               } 
-              
-            }
+            for ( int cc = c_col; cc*4<md.k; cc+=32 ){ 
+                float res[4]{};
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                 
+                   // column & val 
+                   float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+                   
+                   float *shadow_b_addr = &md.shadow_b_dev[ (int)cv.x*md.k ];
+                   
+                   float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ cc ];
+                   
+                   res[0] += cv.y * b_vec.x; 
+                   if ( cc*4+3 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                        res[2] += cv.y * b_vec.z; 
+                        res[3] += cv.y * b_vec.w; 
+                   }else if ( cc*4+2 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                        res[2] += cv.y * b_vec.z; 
+                   }else if ( cc*4+1 < md.k ){
+                        res[1] += cv.y * b_vec.y; 
+                   } 
+                  
+                }
+                
+                
+                // store results back  
+                if ( actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc*4 ], res[0]);
+                        if ( cc*4+3 < md.k ){
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res[1]);
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 2 ], res[2]);
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 3 ], res[3]);
+                        }else if ( cc*4+2 < md.k ){
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res[1]);
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 2 ], res[2]);
+                        }else if ( cc*4+1 < md.k ){
+                            atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res[1]);
+                        }
+                    }else{
+                        if ( cc*4+3 < md.k ){
+                            //md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                            //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+                            //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
+                            //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[3];
+                            float* mat_c = &md.mat_c_dev[ addr ];
+                            float4 vect4_c = {res[0], res[1], res[2], res[3]};
+                            reinterpret_cast<float4*>(mat_c)[ cc ] = vect4_c;
+                        }else if ( cc*4+2 < md.k ){
+                            md.mat_c_dev[ addr + cc*4 ] = res[0];
+                            md.mat_c_dev[ addr + cc*4 + 1 ] = res[1];
+                            md.mat_c_dev[ addr + cc*4 + 2 ] = res[2];
+                        }else if ( cc*4+1 < md.k ){
+                            md.mat_c_dev[ addr + cc*4 ] = res[0];
+                            md.mat_c_dev[ addr + cc*4 + 1 ] = res[1];
+                        }else{
+                            md.mat_c_dev[ addr + cc*4 ] = res[0];
+                        }
+                    }
+                }
+            } 
+        } // end tile-seg row loop
+    } // end tile-segs loops
+    
+        timing_end();
+}
+
+template<int tm, int CF, int warps>
+__global__
+void flexspmm_cuda_vec1_v35(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    const int wp_id = threadIdx.x>>5; //threadIdx.x / 32;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    //const int th_p_row = 4;
+    const int row_id = lane_id>>3; //lane_id / th_p_row; // 8 threads process a row
+    int c_col = lane_id & 0x7; //lane_id % th_p_row;
+
+
+    __shared__ int seg_idx[2];
+    uint32_t sm_id = smid_get();
+
+    
+    int gold_row_id[tm];
+    
+    int nsi = sm_id;
+    // the sentinel tile-seg of the nsi-th SM
+    const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+    while ( true ) {
+
+        int seg_idx_0 = lane_id ? 0 : atomicAdd( &md.next_seg_dev[ nsi ], 1 );
+
+        __syncwarp();
+        if ( lane_id == 0 ) seg_idx[ wp_id ] = seg_idx_0;
+        __syncwarp();
+
+        if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+        if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+ 
+        #pragma unroll
+        for (int i=0; i<tm; ++i){
+            gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+        }
+       
+        // visit all rows of the segment
+        // step, 32 / th_p_row
+        for ( int r_idx = row_id; r_idx<tm; r_idx += 4 ){
+            // the global idx of the first non-zero of this tile-seg 
+            //int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ];
+
+            
+            int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
+            int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
             
             int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+            int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+            int addr = actual_row*md.k;
             
-            // store results back  
-            if ( actual_row<md.m ){
-                int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
-                int addr = actual_row*md.k;
-                
-                if ( atomicORnot>>31 ){
-                    atomicAdd( &md.mat_c_dev[ addr + c_col*4 ], res[0]);
-                    if ( c_col*4+3 < md.k ){
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[3]);
-                    }else if ( c_col*4+2 < md.k ){
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[2]);
-                    }else if ( c_col*4+1 < md.k ){
-                        atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[1]);
-                    }
-                }else{
-                    if ( c_col*4+3 < md.k ){
-                        //md.mat_c_dev[ addr + c_col*4 ] = res[0];
-                        //md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
-                        //md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
-                        //md.mat_c_dev[ addr + c_col*4 + 3 ] = res[3];
-                        float* mat_c = &md.mat_c_dev[ addr ];
-                        float4 vect4_c = {res[0], res[1], res[2], res[3]};
-                        reinterpret_cast<float4*>(mat_c)[ c_col ] = vect4_c;
-                    }else if ( c_col*4+2 < md.k ){
-                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
-                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
-                        md.mat_c_dev[ addr + c_col*4 + 2 ] = res[2];
-                    }else if ( c_col*4+1 < md.k ){
-                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
-                        md.mat_c_dev[ addr + c_col*4 + 1 ] = res[1];
+            for ( int cc = c_col; cc<md.k; cc+=8 ){ 
+                float res = 0;
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                 
+                   // column & val 
+                   float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+                   
+                   float bv = md.shadow_b_dev[ (int)cv.x*md.k + cc ];
+                   res += cv.y * bv; 
+                   
+                }    
+                // store results back  
+                if ( actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc ], res);
                     }else{
-                        md.mat_c_dev[ addr + c_col*4 ] = res[0];
+                        md.mat_c_dev[ addr + cc ] = res;
                     }
                 }
             }
@@ -3916,7 +4003,6 @@ void flexspmm_cuda_k32_vec4_v34(){
     
         timing_end();
 }
-
 
 GPU_Info
 print_gpu_and_kernel_info()
@@ -3942,6 +4028,7 @@ constexpr tileConf tileConfs[] =
      ,{4,8},{8,8},{16,8},{32,8},{64,8},{128,8},{256,8}
      ,{4,16},{8,16},{16,16},{32,16},{64,16},{128,16},{256,16}
      ,{4,32},{8,32},{16,32},{32,32},{64,32},{128,32},{256,32}
+     ,{1,128},{2,128}
     };
 
 void
@@ -4536,14 +4623,15 @@ void run(DataLoader& input_vo){
 // v19: double buffering, a block process contiguous layout segs, vec r and c of sparse input 
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
-// v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k<=4  
+// v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 1 result per thread 
 //#define flex_kernel flexspmm_cuda_k4_vec1_v31
-//v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>4 && k<=8  
+//v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp,  2 results per thread
 //#define flex_kernel flexspmm_cuda_k8_vec2_v32
-// v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k>8 && k<=16  
+// v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
 //#define flex_kernel flexspmm_cuda_k16_vec4_v33
-// v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, for k==32  
-#define flex_kernel flexspmm_cuda_k32_vec4_v34
+// v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
+//#define flex_kernel flexspmm_cuda_k32_vec4_v34
+#define flex_kernel flexspmm_cuda_vec1_v35
     
     
     // Vector size of instructions that load B matrix elements.
@@ -4595,6 +4683,10 @@ void run(DataLoader& input_vo){
           "flexspmm_cuda_k4_vec1_v31", "flexspmm_cuda_k8_vec2_v32", "flexspmm_cuda_k16_vec4_v33"
         };
     
+#ifdef TM_1_2
+        SPECIFY_KERNEL(flex_kernel, 28, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 29, NBX, NBY, NT);
+#endif
 
 #ifdef CUBE4X4
         SPECIFY_KERNEL(flex_kernel, 0, NBX, NBY, NT);
@@ -4939,8 +5031,8 @@ void run(DataLoader& input_vo){
               table.entry("aw", "%2d", act_wps);
               fprintf(tile_nperf,"%2d,", act_wps);
 
-              table.entry("atm/r", "%5.2f", double(mat.atomic_op)/mat.m );
-              fprintf(tile_nperf,"%5.2f,",  double(mat.atomic_op)/mat.m );
+              table.entry("atm/r", "%5.4f", double(mat.atomic_op)/mat.m );
+              fprintf(tile_nperf,"%5.4f,",  double(mat.atomic_op)/mat.m );
               
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;
@@ -5065,27 +5157,24 @@ void run(DataLoader& input_vo){
                   ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
                     + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
                   / (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)) );
+            } 
               table.entry
-                ( "L1/MB", "%5.2f",
-                  (1.0*(mat.est_ld_bytes + mat.est_st_bytes))/1024/1024 );
-
-              fprintf(tile_nperf, "%5.2f,",
-                  (1.0*(mat.est_ld_bytes + mat.est_st_bytes))/1024/1024 );
+                ( "raw/MB", "%9.2f",
+                  (1.0*(mat.raw_ld_bytes + mat.est_st_bytes))/1024/1024 );
+              fprintf(tile_nperf, "%9.2f,",
+                  (1.0*(mat.raw_ld_bytes + mat.est_st_bytes))/1024/1024 );
               
               table.entry
-                ( "tL1/MB", "%6.2f",
+                ( "pTi/MB", "%9.2f",
                   (1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes))/1024/1024 );
-
-              fprintf(tile_nperf, "%6.2f,",
+              fprintf(tile_nperf, "%9.2f,",
                   (1.0*(mat.est_ld_bytes_tiling_ideal + mat.est_st_bytes))/1024/1024 );
               
               table.entry
-                ( "smL2/MB", "%7.2f",
+                ( "pSM/MB", "%9.2f",
                   (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes))/1024/1024 );
-
-              fprintf(tile_nperf, "%7.2f,",
+              fprintf(tile_nperf, "%9.2f,",
                   (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes))/1024/1024 ); 
-             }
               
               const bool more_timing = false;
               if ( more_timing )
@@ -5249,8 +5338,8 @@ void run(DataLoader& input_vo){
               // double u = 4.0 / ( nD - 12.0/mat.k - (2+mat.tm)*mat.n_segs*4.0 / (mat.nnz*mat.k) );
               
 
-              // B reuse: 4/u
-              // A reuse: col + val, 8/k
+              // B loads: 4/u
+              // A loads: col + val, 8/k
               // tile-level: ( group_info(2) * #sm + ( tile_rowPtr(tm+1) + voMap(tm) ) * #tiles ) * 4 / #ops 
               // nD = 4/u + 8/k + ( 2*sm + (tm+1 + tm) * #tiles) * 4 / (k * #nz)  
               double nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
