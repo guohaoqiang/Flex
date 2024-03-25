@@ -4624,14 +4624,14 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
 // v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 1 result per thread 
-//#define flex_kernel flexspmm_cuda_k4_vec1_v31
+#define flex_kernel flexspmm_cuda_k4_vec1_v31
 //v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp,  2 results per thread
 //#define flex_kernel flexspmm_cuda_k8_vec2_v32
 // v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
 //#define flex_kernel flexspmm_cuda_k16_vec4_v33
 // v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
 //#define flex_kernel flexspmm_cuda_k32_vec4_v34
-#define flex_kernel flexspmm_cuda_vec1_v35
+//#define flex_kernel flexspmm_cuda_vec1_v35
     
     
     // Vector size of instructions that load B matrix elements.
@@ -5031,9 +5031,12 @@ void run(DataLoader& input_vo){
               table.entry("aw", "%2d", act_wps);
               fprintf(tile_nperf,"%2d,", act_wps);
 
-              table.entry("atm/r", "%5.4f", double(mat.atomic_op)/mat.m );
-              fprintf(tile_nperf,"%5.4f,",  double(mat.atomic_op)/mat.m );
-              
+              table.entry("bkt", "%3d", mat.empty_bucket );
+              fprintf(tile_nperf,"%3d,",  mat.empty_bucket );
+              if (false){ 
+                table.entry("atm", "%d", mat.atomic_op );
+                fprintf(tile_nperf,"%d,",  mat.atomic_op );
+              }
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;
 
@@ -5063,13 +5066,22 @@ void run(DataLoader& input_vo){
               // Number of nz per occupied tile column.
               const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
               // Worst-case: 1.  Ideal: Average degree.
+              if (false){
+                  table.entry("B-Re1", "%5.2f", nz_p_toc);
+                  fprintf(tile_nperf,"%5.2f,", nz_p_toc);
 
-              table.entry("B-Re1", "%5.2f", nz_p_toc);
-              fprintf(tile_nperf,"%5.2f,", nz_p_toc);
+                  table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
+                  fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
+                  
+                  table.entry("C-", "%d", mat.n_col_sum);
+                  fprintf(tile_nperf,"%d,", mat.n_col_sum);
 
-              table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
-              fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
-              
+                  table.entry("C~", "%d", mat.acc_col);
+                  fprintf(tile_nperf,"%d,", mat.acc_col);
+                  
+                  table.entry("segs", "%d", n_segs);
+                  fprintf(tile_nperf,"%d,", n_segs);
+              }
               // Get and print elapsed time.
               //
               const double et_seconds = NPerf_kernel_et_get();
@@ -5157,7 +5169,8 @@ void run(DataLoader& input_vo){
                   ( NPerf_metric_value_get("l1tex__m_l1tex2xbar_write_bytes.sum")
                     + NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") )
                   / (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes)) );
-            } 
+            }
+           if (false){ 
               table.entry
                 ( "raw/MB", "%9.2f",
                   (1.0*(mat.raw_ld_bytes + mat.est_st_bytes))/1024/1024 );
@@ -5175,7 +5188,7 @@ void run(DataLoader& input_vo){
                   (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes))/1024/1024 );
               fprintf(tile_nperf, "%9.2f,",
                   (1.0*(mat.est_ld_bytes_tiling_sm_ideal + mat.est_st_bytes))/1024/1024 ); 
-              
+           }
               const bool more_timing = false;
               if ( more_timing )
                 {
