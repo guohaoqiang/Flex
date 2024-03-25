@@ -172,6 +172,7 @@ void Mat::dataVolume_est2(){
     est_fp = int64_t(nnz)*k;
     // shadow_b_bytes is identical to gpuX_bytes when perform v9
     // so dl.gpuX_bytes can be seen shadow_b_bytes when v9
+
     //int64_t est_ld_bytes1 = int64_t(segNzRowIdx_bytes) + segNzColIdx_bytes + 
     //                vals_bytes + segPtr_bytes; 
     
@@ -199,7 +200,7 @@ void Mat::dataVolume_est2(){
                                    next_seg_bytes;    
 
     // acc_col should be less than n_col_sum
-    if (false)  printf("%d of %s, n_col_sum = %d, acc_col = %d\n",__LINE__,__FILE__,n_col_sum,acc_col);
+    if (false)  printf("%d of %s, n_col_sum = %ld, acc_col = %ld\n",__LINE__,__FILE__,n_col_sum,acc_col);
     
     est_st_bytes = dl.gpuC_bytes;
 }
@@ -415,8 +416,9 @@ void Mat::sortSegs(){
 }
 void Mat::csr2tile(){
 
-    const int nnz_csr = rowPtr[m];    
-    
+
+  const int nnz_csr = rowPtr[m];
+
     bool print_bucket = false;
 	int tileRows = (m+tm-1)/tm;
 	for (int i=0; i<tileRows; ++i){
@@ -425,7 +427,9 @@ void Mat::csr2tile(){
 		//csr2regular(i);
         csr2seg_Cmajor(i);
 	} 
-    assert(nnz_csr ==seg_rowPtr.back());
+
+    assert( nnz_csr == seg_rowPtr.back() );
+
     n_segs = segPtr.size()-1;
     if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
     bool seg_sort = false;
@@ -445,7 +449,9 @@ void Mat::csr2tile(){
         // according to #non zeros ( wkload per sm )
         // to balance workload, the last bucket is to offer segs when faster SMs are free   
         int nnz = newVals.size(); 
-        assert(nnz==nnz_csr);
+
+        assert( nnz == nnz_csr );
+
         int wkload = nnz / n_sm; 
         int seg_head_sm = 0;
         int seg_tail_sm;
