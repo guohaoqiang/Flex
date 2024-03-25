@@ -108,27 +108,64 @@ void Mat::dataVolume_est2(){
     // the first SM buckets 
     for (int i=0; i<sms; ++i){
         
-        for (int j=seg_rowPtr[ next_seg[ i ]*(tm+1) ]; 
-
-                j<seg_rowPtr[ grouped_tailSeg[ i ]*(tm+1) -1 ]; ++j){
-            validate_nnz++;
-            col_st[i].insert( (int)segNzCV[j*2] );
+        if ( next_seg[ i ]<grouped_tailSeg[ i ] ){
+            for (int j=seg_rowPtr[ next_seg[ i ]*(tm+1) ]; 
+                    j<seg_rowPtr[ grouped_tailSeg[ i ]*(tm+1) -1]; ++j){
+                validate_nnz++;
+                col_st[i].insert( (int)segNzCV[j*2] );
+            }
         }
     }
+    
     // the last bucket, which is used for workload balance
+    acc_col = 0;
     for (int i=next_seg[sms]; i<n_segs; ++i){
-       
+       unordered_set<int> last_tile_col;
        for (int ii=0; ii<tm; ++ii) 
         for (int j=seg_rowPtr[ i*(tm+1)+ii ]; 
                 j<seg_rowPtr[ i*(tm+1)+ii+1 ]; ++j){
             validate_nnz++;
             col_st[sms].insert( (int)segNzCV[j*2] );
+            last_tile_col.insert( (int)segNzCV[j*2] );
         }
+
+       acc_col += last_tile_col.size();
+    }
+    
+    const char* l1cache = "l1cache.csv";
+    FILE *l1_est = fopen(l1cache,"aw");
+    //fprintf(l1_est,"%s,",dl.graph_name.c_str());
+    //fprintf(l1_est,"%s,",dl.vertex_order_abbr.c_str());
+    //fprintf(l1_est,"%d\n",tm);
+    if (validate_nnz!=nnz){
+        printf("%d of %s, val = %d, nnz = %d\n",__LINE__,__FILE__,validate_nnz,nnz);
     }
     assert(validate_nnz==nnz);
-    acc_col = 0;
-    for (int j=0; j<=sms; ++j){
+    bool b_l1cache = false;
+    bool a_l1cache = false;
+    for (int j=0; j<sms; ++j){
         acc_col += col_st[j].size();
+        if (b_l1cache){
+            if(j<sms-1) fprintf(l1_est,"%d,", col_st[j].size());
+            else fprintf(l1_est,"%d\n", col_st[j].size());
+        }
+        if (a_l1cache){
+            int nnz_in_sm = 0;
+            if ( next_seg[ j ]<grouped_tailSeg[ j ] ){
+                nnz_in_sm = seg_rowPtr[grouped_tailSeg[j]*(tm+1)-1] - seg_rowPtr[next_seg[j]*(tm+1)];
+                int tiles_in_sm = grouped_tailSeg[j] - next_seg[j];
+                assert(tiles_in_sm>0);
+            }
+            fprintf(l1_est,"%d,", nnz_in_sm);
+        }
+    }
+    if(a_l1cache){
+        if ( next_seg[ sms ]<grouped_tailSeg[ sms ] ){
+            fprintf(l1_est,"%d\n", seg_rowPtr[grouped_tailSeg[sms]*(tm+1)-1]-
+                                                seg_rowPtr[next_seg[sms]*(tm+1)] );
+        }else{
+            fprintf(l1_est,"%d\n", 0);
+        }
     }
 /******************************************************************************/
 
@@ -419,31 +456,29 @@ void Mat::csr2tile(){
         int seg_head_sm = 0;
         int seg_tail_sm;
         int validate_nnz = 0;
-
+        
         // assign segs to each sm bucket
         for (int i=0; i<n_sm; ++i){
             next_seg.push_back( seg_head_sm );
             int nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
             
             seg_tail_sm = seg_head_sm + 1;
-            while ( seg_tail_sm < n_segs && nz<(int)(0.95*wkload) ){
+            while ( seg_tail_sm < n_segs && nz<(int)(0.97*wkload) ){
                 nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
                 seg_tail_sm++;
             }
             validate_nnz += nz;
             grouped_tailSeg.push_back( min(n_segs,seg_tail_sm) );
-            if (print_bucket) printf("%d of %s, %d#sm: start = %d, end = %d\n", 
-                    __LINE__,__FILE__, i,seg_head_sm,grouped_tailSeg.back());
+            if ( seg_head_sm==min(n_segs,seg_tail_sm) ){
+                empty_bucket++;
+            }
             seg_head_sm = seg_tail_sm;
         }
-        if (false) printf("%d of %s, normal_nnz = %d\n", __LINE__,__FILE__,validate_nnz);
         
         // the last bucket is used for workload balance among SMs 
         // if seg_head_sm==n_segs, then n_segs==seg_head_sm
         next_seg.push_back( seg_head_sm );
         grouped_tailSeg.push_back( n_segs );
-        if (print_bucket) printf("%d of %s, %d#sm: start = %d, end = %d\n", 
-                    __LINE__,__FILE__, n_sm, seg_head_sm,grouped_tailSeg.back());
         validate_nnz += segPtr[n_segs]-segPtr[seg_head_sm];
         assert( validate_nnz==segPtr.back() );
         assert( grouped_tailSeg.size()==n_sm+1 );

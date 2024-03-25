@@ -101,6 +101,7 @@ class Mat : public Mat_POD{
     std::vector<float> segNzCV;
 
     int nnz_limit;
+    int empty_bucket = 0;
 	int segPtr_bytes = 0; 
 	int segVoMap_bytes = 0; 
 	int segNzRowIdx_bytes = 0; 
