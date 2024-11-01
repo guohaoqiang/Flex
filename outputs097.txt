@@ -1,0 +1,83 @@
+Graph name: reddit
+A: 232965*232965  X: 232965*8   W: 8*41
+Avg degree: 100.6   Undirected,  n one-way edges 0, asymmetric 0
+Nodes zero-deg-in 0, zero-deg-out 0, zero-deg 0
+NNZ of A: 23446803
+Rabbit round  1, n elts 232965
+Rabbit round  2, n elts 35760
+Rabbit round  3, n elts 4584
+Rabbit round  4, n elts 463
+Rabbit round  5, n elts 31
+Rabbit round  6, n elts 8
+Rabbit round  7, n elts 1
+Shyness 1.0. Iter 1  GH 0 GS 0 Rabbit found 1566 communities, 177091 hubs 76.016%, edges 3370866. Mod 0.427391
+	Info: Applying RCM order
+	Info: Transfering degrees instead of recomputing
+	Info: Converting to bidirected adjacency list
+	Info: Transfering degrees instead of recomputing
+	Info: Applying Gorder with window 3
+Terminated
+Graph name: ppi
+A: 14755*14755  X: 14755*8   W: 8*121
+Avg degree: 31.1   Undirected,  n one-way edges 0, asymmetric 0
+Nodes zero-deg-in 0, zero-deg-out 0, zero-deg 0
+NNZ of A: 458973
+Rabbit round  1, n elts 14755
+Rabbit round  2, n elts 4400
+Rabbit round  3, n elts 496
+Rabbit round  4, n elts 15
+Rabbit round  5, n elts 4
+Shyness 1.0. Iter 1  GH 0 GS 0 Rabbit found 68 communities, 0 hubs 0.000%, edges 0. Mod 0.495938
+	Info: Applying RCM order
+	Info: Transfering degrees instead of recomputing
+	Info: Converting to bidirected adjacency list
+	Info: Transfering degrees instead of recomputing
+	Info: Applying Gorder with window 3
+GPU 0: NVIDIA H100 PCIe @ 1.75 GHz WITH 81109 MiB GLOBAL MEM
+GPU 0: L2: 51200 kiB   MEM<->L2: 2039.0 GB/s
+GPU 0: CC: 9.0  SM: 114  SP-FP32/SM: 128  DP-FP64/SM: 64  TH/BL: 1024
+GPU 0: SHARED: 49152 B/BL  233472 B/SM  CONST: 65536 B  # REGS: 65536
+GPU 0: PEAK: 25609 SP GFLOPS  12804 DP GFLOPS  COMP/COMM:  50.2 SP  50.2 DP
+GPU 1: NVIDIA H100 PCIe @ 1.75 GHz WITH 81109 MiB GLOBAL MEM
+GPU 1: L2: 51200 kiB   MEM<->L2: 2039.0 GB/s
+GPU 1: CC: 9.0  SM: 114  SP-FP32/SM: 128  DP-FP64/SM: 64  TH/BL: 1024
+GPU 1: SHARED: 49152 B/BL  233472 B/SM  CONST: 65536 B  # REGS: 65536
+GPU 1: PEAK: 25609 SP GFLOPS  12804 DP GFLOPS  COMP/COMM:  50.2 SP  50.2 DP
+Using GPU 0
+Call of cuCtxGetCurrent, cbid 304, serial 1
+Kernel (flexspmm_cuda_k8_vec2_v32<tileConfs[28].tm,128,4>):  32 regs,  0 local,  8 B shared.
+Kernel (flexspmm_cuda_k8_vec2_v32<tileConfs[29].tm,128,4>):  40 regs,  8 local,  8 B shared.
+Kernel (flexspmm_cuda_k8_vec2_v32<tileConfs[0].tm,128,4>):  40 regs,  16 local,  8 B shared.
+Kernel (flexspmm_cuda_k8_vec2_v32<tileConfs[1].tm,128,4>):  40 regs,  32 local,  8 B shared.
+Kernel (flexspmm_cuda_k8_vec2_v32<tileConfs[2].tm,128,4>):  40 regs,  64 local,  8 B shared.
+Writing detailed statistics to file flex-tile-stats.log
+block dim: 64
+cuSpmm setup/µs: 7459.84 , prosessing/µs: 65.77, total/µs: 7525.61
+                                           -------------------------------------Per Mult-------------------------------------
+                                           ----------------Num Insns----------------                                          -------------Entire GPU-------------
+                                           ----------Load---------- --Store---       Time ---------------L1←L2--------------- -L1 ⇆ L2- ---L2 ⇆ DRAM---- -FP Thpt-
+Ord  tm b/s aw bkt B-Re1 B-Re2    t/µs Imb  All    G   GC   pG  LDe   All    G   All  Cyc  8/tk  meta    at     u Bytes    BC GB/s % Pk Bytes GB/s  % Pk   GFLOP/s
+OVO   1  32 64   0  1.00  2.78    51.0 120  9.3  8.8  9.9  0.3 59.7  0.76 0.50  67.0  356  1.00  0.05  0.29  2.74  2.80  5.07  250  3.9  1.00   72   3.5     72.00
+DFS   1  32 64   0  1.00  2.78    33.7  42  9.3  8.8  9.9  0.3 59.7  0.76 0.50  67.0  235  1.00  0.05  0.29  2.73  2.81  5.07  379  5.9  1.09  118   5.8    109.03
+GOR   1  32 64   0  1.00  2.78    47.4  98  9.3  8.8  9.9  0.3 59.7  0.76 0.50  67.0  330  1.00  0.05  0.29  2.74  2.80  5.07  269  4.2  1.12   87   4.2     77.52
+RBT   1  32 64   0  1.00  2.79    51.9 123  9.3  8.8  9.9  0.3 59.7  0.76 0.50  67.0  362  1.00  0.05  0.29  2.74  2.80  5.07  245  3.9  1.10   78   3.8     70.74
+OVO   2  32 48   0  1.03  2.69    35.4  81  7.6  7.1  9.5  0.3 60.4  0.65 0.37  51.9  247  1.00  0.05  0.28  2.69  2.81  4.93  420  6.2  1.04  108   5.3    103.67
+DFS   2  32 48   0  1.07  2.83    32.7  63  7.7  7.2  9.5  0.3 60.4  0.65 0.37  52.2  228  1.00  0.05  0.28  2.81  2.75  4.78  446  6.9  1.13  127   6.2    112.20
+GOR   2  32 48   0  1.17  2.99    28.1  41  6.4  5.9  9.5  0.3 60.1  0.65 0.37  46.5  196  1.00  0.05  0.29  2.96  2.69  4.47  518  7.8  1.17  153   7.5    130.85
+RBT   2  32 48   0  1.10  2.91    31.4  66  7.0  6.5  9.5  0.3 60.3  0.65 0.37  49.1  219  1.00  0.05  0.28  2.90  2.71  4.71  462  7.0  1.13  132   6.5    116.80
+OVO   4  32 48   0  1.08  2.83    26.3  40  6.0  5.6  9.6  0.3 60.5  0.53 0.30  40.6  183  1.00  0.06  0.41  2.84  2.87  4.76  611  8.6  1.04  146   7.2    139.86
+DFS   4  32 48   0  1.16  3.09    29.0  54  5.9  5.6  9.6  0.3 60.3  0.53 0.30  40.6  202  1.00  0.06  0.43  3.09  2.79  4.52  548  8.2  1.15  146   7.1    126.73
+GOR   4  32 48   0  1.37  3.34    27.7  53  4.6  4.2  9.5  0.3 59.6  0.53 0.30  34.2  193  1.00  0.06  0.42  3.33  2.68  3.98  562  8.1  1.16  153   7.5    132.72
+RBT   4  32 48   0  1.21  3.07    29.3  66  5.3  4.9  9.5  0.3 60.1  0.53 0.31  37.2  204  1.00  0.06  0.39  3.08  2.74  4.37  532  7.9  1.17  147   7.2    125.45
+OVO   8  32 48   0  1.15  3.40    29.0  71  4.8  4.5 10.1  0.3 60.0  0.52 0.27  33.2  202  1.00  0.09  0.80  3.42  3.06  4.57  682  8.9  1.04  132   6.5    126.55
+DFS   8  32 48   0  1.26  3.77    29.5  66  4.7  4.3 10.0  0.3 59.8  0.52 0.27  32.5  206  1.00  0.09  0.79  3.78  2.94  4.28  656  9.4  1.22  151   7.4    124.28
+GOR   8  32 48   0  1.59  3.97    23.8  45  3.5  3.2  9.9  0.3 58.4  0.52 0.27  26.8  166  1.00  0.09  0.73  3.97  2.82  3.61  790 11.1  1.17  180   8.8    154.12
+RBT   8  32 48   0  1.35  3.61    24.6  30  4.1  3.8 10.0  0.3 59.3  0.53 0.27  29.8  171  1.00  0.09  0.77  3.62  2.96  4.05  789 11.3  1.22  182   8.9    149.35
+OVO  16  32 48   0  1.26  4.55    35.5  53  5.6  5.2 11.1  0.3 58.8  0.58 0.26  39.5  248  1.00  0.16  1.39  4.33  3.47  4.33  770  9.9  1.17  121   5.9    103.33
+DFS  16  32 48   0  1.40  4.93    39.2  70  5.5  5.1 11.1  0.3 58.5  0.58 0.26  38.9  273  1.00  0.16  1.36  4.62  3.38  4.01  689 10.1  1.30  122   5.9     93.67
+GOR  16  32 48   0  1.84  4.90    31.2  46  4.3  3.9 11.0  0.3 56.7  0.58 0.26  32.8  217  1.00  0.16  1.33  4.55  3.36  3.33  859 12.3  1.29  153   7.5    117.83
+RBT  16  32 48   0  1.55  4.85    30.1  30  4.9  4.5 11.0  0.3 57.7  0.59 0.27  36.1  210  1.00  0.16  1.37  4.53  3.41  3.75  900 13.1  1.30  159   7.8    122.16
+Key:  b/s,   Blocks per SM
+      aw,    Active (Resident) Warps per SM
+      atm/r, Atomic Operations per Row
+      B-Re,  B Matrix Element Reuse per Segment

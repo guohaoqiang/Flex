@@ -21,6 +21,11 @@ DataLoader::DataLoader(const std::string& data_path, const int di)
     while(std::getline(ss1,word,',')){
         rowPtr.push_back(std::stoi(word));        
     }
+    uni_nb = 0;
+    for (int i=1; i<rowPtr.size(); ++i){
+        if ( rowPtr[i]-rowPtr[i-1]==1 ) uni_nb++;
+    }
+
     
     std::getline(fin,line);
     std::stringstream ss2(line);
@@ -231,7 +236,7 @@ DataLoader::gpuC_zero()
 DataLoader::DataLoader(const DataLoader& dl):dl_original(&dl)
 {
   #define CPY(m) m = dl.m
-  CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name);
+  CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name); CPY(uni_nb);
   #undef CPY
 }
 
@@ -326,6 +331,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
   // dl, starting at vertex 0.
 
   vertex_order_abbr = "DFS";
+  uni_nb = dl.uni_nb;
 
   assert( dl.rowPtr.size() == n + 1 );
 
@@ -465,6 +471,7 @@ DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
 
   vertex_order_abbr = "RBT";
   gpuX = dl.gpuX;
+  uni_nb = dl.uni_nb;
 
   // Variations from Balaji 23 ISPASS 
   //
@@ -785,6 +792,7 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
   //  }
   gpuX = dl.gpuX;
   vertex_order_abbr = "GOR";
+  uni_nb = dl.uni_nb;
 
   assert( dl.rowPtr.size() == n + 1 );
 

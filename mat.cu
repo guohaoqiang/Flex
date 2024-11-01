@@ -12,6 +12,7 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
             nnz = input.nnz;
 			tm = tileh;
             tn = tilew;
+            uni_nb = input.uni_nb;
 			tileRowPtr.push_back(0);
 			segPtr.push_back(0);
 			tileNnz.push_back(0);
@@ -105,6 +106,7 @@ void Mat::dataVolume_est2(){
 /*********** compute B rows to be loaded for each sm **************************/
     int64_t validate_nnz = 0; 
     vector<unordered_set<int>> col_st(sms+1, unordered_set<int>());  
+    unordered_map<int,int> c_sm;
     // the first SM buckets 
     for (int i=0; i<sms; ++i){
         
@@ -114,6 +116,10 @@ void Mat::dataVolume_est2(){
                 validate_nnz++;
                 col_st[i].insert( (int)segNzCV[j*2] );
             }
+        }
+        // collect long row break and draw the pie
+        for ( auto &cc: col_st[i] ){
+            c_sm[cc]++;
         }
     }
     
@@ -130,26 +136,69 @@ void Mat::dataVolume_est2(){
         }
 
        acc_col += last_tile_col.size();
+        for ( auto &cc: col_st[sms] ){
+            c_sm[cc]++;
+        }
     }
-    
+
+    if (false){
+        bool draw_pie = true;
+        int pie[6] = { 0 };
+        const char* pie_sm = "c_sm.csv";
+        FILE *pie_c_sm = fopen(pie_sm,"aw");
+        if (draw_pie){
+            for ( auto &p:c_sm ){
+                if ( p.second==1 ){
+                    pie[0]++;
+                }else if ( p.second==2 ){
+                    pie[1]++;
+                }else if ( p.second==3 ){
+                    pie[2]++;
+                }else if ( p.second>3 && p.second<=5 ){
+                    pie[3]++;
+                }else if ( p.second>5 && p.second<=10 ){
+                    pie[4]++;
+                }else{
+                    pie[5]++;
+                }
+            }
+        }
+        fprintf(pie_c_sm, "%ld,",uni_nb);
+        for (int ii=0; ii<6; ++ii){
+            if (ii<5) fprintf(pie_c_sm, "%d,",pie[ii]);
+            else fprintf(pie_c_sm, "%d\n",pie[ii]);
+        }
+        fclose(pie_c_sm);
+    }
+
+    bool collect_b_loads = false;
+    bool collect_ops = true;
+    bool collect_tile_alloc = false;
     const char* l1cache = "l1cache.csv";
+    if (collect_b_loads){
+        l1cache = "b_loads_per_sm.csv";
+    }
+    if (collect_ops){
+        l1cache = "ops_per_sm.csv";
+    }
+    if (collect_tile_alloc){
+        l1cache = "tiles_per_sm.csv";
+    }
     FILE *l1_est = fopen(l1cache,"aw");
-    //fprintf(l1_est,"%s,",dl.graph_name.c_str());
-    //fprintf(l1_est,"%s,",dl.vertex_order_abbr.c_str());
-    //fprintf(l1_est,"%d\n",tm);
+    fprintf(l1_est,"%s,",dl.graph_name.c_str());
+    fprintf(l1_est,"%s,",dl.vertex_order_abbr.c_str());
+    fprintf(l1_est,"%d\n",tm);
     if (validate_nnz!=nnz){
-        printf("%d of %s, val = %d, nnz = %d\n",__LINE__,__FILE__,validate_nnz,nnz);
+        printf("%d of %s, val = %d, nnz = %d\n",__LINE__,__FILE__,(int)validate_nnz,(int)nnz);
     }
     assert(validate_nnz==nnz);
-    bool b_l1cache = false;
-    bool a_l1cache = false;
+    int validate_segs = n_segs;
     for (int j=0; j<sms; ++j){
         acc_col += col_st[j].size();
-        if (b_l1cache){
-            if(j<sms-1) fprintf(l1_est,"%d,", col_st[j].size());
-            else fprintf(l1_est,"%d\n", col_st[j].size());
+        if (collect_b_loads){
+            fprintf(l1_est,"%d,", (int)col_st[j].size());
         }
-        if (a_l1cache){
+        if (collect_ops){
             int nnz_in_sm = 0;
             if ( next_seg[ j ]<grouped_tailSeg[ j ] ){
                 nnz_in_sm = seg_rowPtr[grouped_tailSeg[j]*(tm+1)-1] - seg_rowPtr[next_seg[j]*(tm+1)];
@@ -158,14 +207,26 @@ void Mat::dataVolume_est2(){
             }
             fprintf(l1_est,"%d,", nnz_in_sm);
         }
+        if (collect_tile_alloc){
+            fprintf(l1_est,"%d,", grouped_tailSeg[j]-next_seg[j]);
+            validate_segs -= (grouped_tailSeg[j]-next_seg[j]);
+        }
     }
-    if(a_l1cache){
+    if (collect_b_loads){
+        fprintf(l1_est,"%d\n", (int)col_st[ sms ].size());
+    }
+    if(collect_ops){
         if ( next_seg[ sms ]<grouped_tailSeg[ sms ] ){
             fprintf(l1_est,"%d\n", seg_rowPtr[grouped_tailSeg[sms]*(tm+1)-1]-
                                                 seg_rowPtr[next_seg[sms]*(tm+1)] );
         }else{
             fprintf(l1_est,"%d\n", 0);
         }
+    }
+    if (collect_tile_alloc){
+        fprintf(l1_est,"%d\n", grouped_tailSeg[ sms ]-next_seg[ sms ]);
+        validate_segs -= (grouped_tailSeg[ sms ]-next_seg[ sms ]);
+        assert( validate_segs==0 );
     }
 /******************************************************************************/
 
@@ -274,9 +335,9 @@ int Mat::checkSim(vector<int>& a, vector<int>& b){
     }
     return sim;
 }
-void Mat::sortSegs(){
+void Mat::dfsSegs(){
 
-    vector<int> insular;
+    unordered_set<int> insular;
     // construct graph
     // { idx, col overlaps } min heap, sort by col overlaps
     // enable the max col overlap be on the top of the stack when DFS
@@ -294,8 +355,11 @@ void Mat::sortSegs(){
         for ( auto col_i: cols_seg[i] )
           for ( auto seg_j: col_to_seg[col_i] )
             {
+              // 
               if ( seg_j <= i ) continue;
-              if ( id2r[i] == id2r[seg_j] ) continue;
+              // pruning, two segs cannot be on the same row panel
+              if ( id2r[i] == id2r[seg_j] ) continue; 
+              // pruning, check if the seg_j-th seg has been paired
               if ( mark[seg_j] == i ) continue;
               mark[seg_j] = i;
               int sim = checkSim(cols_seg[i],cols_seg[seg_j]);
@@ -305,13 +369,13 @@ void Mat::sortSegs(){
               }
             }
         if ( g[i].empty() ) {
-          insular.push_back(i);
+          insular.insert(i);
           g[i].push( {i,0} );
         }
       }
 
-    if ( false && insular.size()>0 ){
-        printf("insular segs = %d\n",(int)insular.size());
+    if ( insular.size()>0 ){
+        printf("insular segs = %lu\n",insular.size());
         //assert( insular.size()==0 );
     }
 	std::vector<unsigned int> segPtr1(1,0);
@@ -328,48 +392,54 @@ void Mat::sortSegs(){
     // explore L1 reuse
     vector<bool> visited(n_segs,false);
     stack<int> st;
-    st.push(0);
-    while ( !st.empty() ){
-        
-        int node = st.top();
-        st.pop();
-        if (visited[node])  continue;
-        visited[node] = true;
-
-        int seg_nnz = segPtr[node+1] - segPtr[node];
-        for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
-            segNzRCIdx1.push_back(segNzRCIdx[2*i]);
-            segNzRowIdx1.push_back(segNzRCIdx[2*i]);
-            segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
-            segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+    unsigned val_seg = 0;
+    unsigned val_w = 0;
+    for (int src=0; src<n_segs; ++src){
+        if (visited[src] || insular.find(src)!=insular.end())   continue;
+        st.push(src);
+        while ( !st.empty() ){
             
-            newVals1.push_back(newVals[i]);
-            
-            segNzCV1.push_back(segNzCV[2*i]);
-            segNzCV1.push_back(segNzCV[2*i+1]);
-    
-        }        
-        segPtr1.push_back(segPtr1.back()+seg_nnz);
-        for (int i=0; i<tm; ++i){
-            segVoMap1.push_back(segVoMap[node*tm+i]);
-        }
-        
-        if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
-        else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
-        for (int i=0; i<tm; ++i){
-            seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
-        }
-        
-        while ( !g[node].empty() ){
+            int node = st.top();
+            st.pop();
+            if (visited[node])  continue;
+            visited[node] = true;
+            val_seg++;
 
-            auto nb = g[node].top();
-            g[node].pop();
-            if ( !visited[nb.first] ){
-                st.push(nb.first);
+            int seg_nnz = segPtr[node+1] - segPtr[node];
+            val_w += seg_nnz;
+            for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
+                segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+                segNzRowIdx1.push_back(segNzRCIdx[2*i]);
+                segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+                segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+                
+                newVals1.push_back(newVals[i]);
+                
+                segNzCV1.push_back(segNzCV[2*i]);
+                segNzCV1.push_back(segNzCV[2*i+1]);
+        
+            }        
+            segPtr1.push_back(segPtr1.back()+seg_nnz);
+            for (int i=0; i<tm; ++i){
+                segVoMap1.push_back(segVoMap[node*tm+i]);
             }
-        }            
-    }
+            
+            if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
+            else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
+            for (int i=0; i<tm; ++i){
+                seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
+            }
+            
+            while ( !g[node].empty() ){
 
+                auto nb = g[node].top();
+                g[node].pop();
+                if ( !visited[nb.first] ){
+                    st.push(nb.first);
+                }
+            }            
+        }
+    }
     for (int node:insular){
     
         int seg_nnz = segPtr[node+1] - segPtr[node];
@@ -414,6 +484,166 @@ void Mat::sortSegs(){
     swap(segNzCV, segNzCV1);
     swap(seg_rowPtr, seg_rowPtr1);
 }
+int Mat::checkSim2(map<int,int>& a, vector<int>& b){
+    // check the number of colnum overlap (non-zeros)
+    // to improve (temporal) locality of dense input in L1 
+    int sim = 0;
+    int j = 0;
+    while ( j<b.size() ){
+        if ( a.find(b[j++])!=a.end() ){
+            sim++;
+        }
+    }
+    return sim;
+}
+void Mat::sliWinSegs(){
+
+    vector<int> insular;
+
+    vector< vector<int> > col_to_seg(n);
+    for (int i=0; i<n_segs; i++ )
+      for ( auto c: cols_seg[i] ) col_to_seg[c].push_back(i);
+
+
+	std::vector<unsigned int> segPtr1(1,0);
+	std::vector<unsigned int> segNzRCIdx1;
+	std::vector<unsigned int> segNzRowIdx1;
+	std::vector<unsigned int> segNzRowIdx_2bit1;
+	std::vector<unsigned int> segNzColIdx1;
+	std::vector<float> newVals1;
+	std::vector<unsigned int> segVoMap1;
+
+	std::vector<float> segNzCV1;
+	std::vector<int> seg_rowPtr1;
+    // DFS reorder segs
+    // explore L1 reuse
+    vector<bool> visited(n_segs,false);
+    vector<int> seg_ord;
+    int window = 64; // expected active_warps 
+    for (int src=0; src<n_segs; ++src){
+        if ( visited[src] )   continue;
+        visited[src] = true;
+       
+        // {col_idx, freq}, like a sliding window to kepp track of the latest #window segs 
+        map<int,int> col_in_cache;
+        std::transform( std::begin(cols_seg[src]),std::end(cols_seg[src]),
+                std::inserter(col_in_cache, col_in_cache.end()),
+                [](int colID) {return std::make_pair(colID,1);} ); 
+        vector<int> tree_seg_ord;
+        // while loop for current graph component traversal
+        int val_seg = 0;
+        while (true)
+        { 
+            val_seg++;
+            assert(val_seg<=n_segs); // just to detect infinite loop
+
+            int candidate_seg = src;
+
+            // at least 1 col overlap between two tiles
+            int mx_sim = 1;
+            // explore the tile having maximum col overlaps 
+            // with previous #window tiles
+            for ( auto col_i: col_in_cache )
+              for ( auto seg_j: col_to_seg[col_i.first] ) // all segs having col_i.first
+                {
+                  if ( visited[seg_j] )   continue;
+                  int sim = checkSim2(col_in_cache,cols_seg[seg_j]);
+                  if ( sim>mx_sim ){
+                      mx_sim = sim;
+                      candidate_seg = seg_j;
+                  }
+                }
+            // no matter it is insular or new seg
+            visited[candidate_seg] = true;
+            // check if we find a potential to grow the tree 
+            if(candidate_seg!=src){
+                // found one potential
+                // update col_in_cache
+                // works like a sliding window
+                if (tree_seg_ord.size()>=window){
+                    int to_be_evict = *(tree_seg_ord.rbegin()+window-1);
+                    for ( auto col_ii: cols_seg[to_be_evict] ){
+                        if (--col_in_cache[col_ii]==0){
+                           col_in_cache.erase(col_ii); 
+                        }
+                    }
+                }
+                for ( auto col_ii: cols_seg[candidate_seg] ){
+                    col_in_cache[col_ii]++; 
+                }
+
+                // push the candidate into seg_ord
+                if (tree_seg_ord.size()==0) tree_seg_ord.push_back(src);
+                tree_seg_ord.push_back(candidate_seg); 
+            }else{
+                // leaf OR insular
+                if (tree_seg_ord.size()==0){
+                    // insular
+                    insular.push_back(src);
+                }
+                break;
+            }
+        }
+        // merge the current tree into our forest
+        seg_ord.insert(seg_ord.end(),tree_seg_ord.begin(),tree_seg_ord.end()); 
+
+    }
+    if (false)
+    {
+        printf("%d of %s : #segs = %d\n",__LINE__,__FILE__,n_segs);
+        printf("%d of %s : #seg_ord = %lu, #insular = %lu\n",__LINE__,__FILE__,
+                seg_ord.size(),insular.size());
+    }
+    // merge the current tree into our forest
+    seg_ord.insert(seg_ord.end(),insular.begin(),insular.end()); 
+    assert(seg_ord.size()==n_segs);
+    for (int node:seg_ord){
+    
+        int seg_nnz = segPtr[node+1] - segPtr[node];
+        for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
+            segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRowIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+            segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+            
+            newVals1.push_back(newVals[i]); 
+            
+            segNzCV1.push_back(segNzCV[2*i]);
+            segNzCV1.push_back(segNzCV[2*i+1]);
+        } 
+        segPtr1.push_back(segPtr1.back()+seg_nnz);
+        for (int i=0; i<tm; ++i){
+            segVoMap1.push_back(segVoMap[node*tm+i]);
+        }
+       
+        if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
+        else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
+        for (int i=0; i<tm; ++i){
+            seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
+        }
+    }
+
+	assert( segPtr.size()==segPtr1.size() );
+	assert( segNzRCIdx.size()==segNzRCIdx1.size() );
+	assert( segNzRowIdx.size()==segNzRowIdx1.size() );
+	assert( segNzColIdx.size()==segNzColIdx1.size() );
+	assert( newVals.size()==newVals1.size() );
+	assert( segVoMap.size()==segVoMap1.size() );
+    assert( segNzCV.size()==segNzCV1.size() );
+    assert( seg_rowPtr.size()==seg_rowPtr1.size() );
+      
+	swap(segPtr, segPtr1);
+	swap(segNzRCIdx, segNzRCIdx1);
+	swap(segNzRowIdx, segNzRowIdx1);
+	swap(segNzColIdx, segNzColIdx1);
+	swap(newVals, newVals1);
+	swap(segVoMap, segVoMap1);
+    swap(segNzCV, segNzCV1);
+    swap(seg_rowPtr, seg_rowPtr1);
+}
+
+
+
 void Mat::csr2tile(){
 
 
@@ -432,10 +662,11 @@ void Mat::csr2tile(){
 
     n_segs = segPtr.size()-1;
     if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
-    bool seg_sort = false;
+    bool seg_sort = true;
     if (seg_sort) {
         //permute_segs();
-        sortSegs();
+        dfsSegs();
+        //sliWinSegs();
     }
     
         int device_id;
@@ -463,7 +694,7 @@ void Mat::csr2tile(){
             int nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
             
             seg_tail_sm = seg_head_sm + 1;
-            while ( seg_tail_sm < n_segs && nz<(int)(0.97*wkload) ){
+            while ( seg_tail_sm < n_segs && nz<(int)(0.98*wkload) ){
                 nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
                 seg_tail_sm++;
             }

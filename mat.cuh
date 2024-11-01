@@ -72,7 +72,9 @@ class Mat : public Mat_POD{
 	void csr2tile();
     void permute_segs();
     int checkSim(vector<int>&, vector<int>&);
-    void sortSegs();
+    void dfsSegs();
+    int checkSim2(map<int,int>&, vector<int>&);
+    void sliWinSegs();
 
 	std::vector<unsigned int> tileNnz;
 	std::vector<unsigned int> tileColIdx;
@@ -113,6 +115,7 @@ class Mat : public Mat_POD{
     int seg_rowPtr_bytes;
     int segNzCV_bytes;
     
+    int64_t uni_nb = 0;;
     int64_t est_fp = 0;
     int64_t raw_ld_bytes = 0;
     int64_t est_ld_bytes = 0;

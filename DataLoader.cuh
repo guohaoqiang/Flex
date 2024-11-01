@@ -55,6 +55,7 @@ public:
     float *vals_dev = nullptr;
     
     int64_t gpuX_bytes, C_elts, gpuC_bytes;
+    int64_t uni_nb;
     float *gpuX = nullptr;
     float *gpuW = nullptr;
     float *gpuC = nullptr;
@@ -113,12 +114,14 @@ public:
 class DataLoaderRabbit : public DataLoader
 {
 public:
+  int64_t uni_nb;
   DataLoaderRabbit(const DataLoader& dl);
 };
 
 class DataLoaderDFS : public DataLoader
 {
 public:
+  int64_t uni_nb;
   DataLoaderDFS(const DataLoader& dl);
 };
 
@@ -137,6 +140,7 @@ public:
 class DataLoaderGorder : public DataLoader
 {
 public:
+  int64_t uni_nb;
   DataLoaderGorder(const DataLoader& dl);
 };
 #endif /* DATALOADER_H */

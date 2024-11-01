@@ -4472,7 +4472,7 @@ void run(DataLoader& input_vo){
     const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
    
     bool roofline = false; 
-    if ( roofline ){
+    if ( roofline | true ){
         NPerf_metric_collect("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
   /****************************************** colect data for roofline ***************************************/
         // the following 8 events are related L1 Cache access , each trans is 128 bytes
@@ -4505,6 +4505,7 @@ void run(DataLoader& input_vo){
     NPerf_metric_collect("sm__cycles_elapsed.max");                                                                            
     NPerf_metric_collect("sm__inst_executed.sum");
     NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
+    NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes_mem_global_op_atom.sum");
     NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
@@ -4528,6 +4529,11 @@ void run(DataLoader& input_vo){
     NPerf_metric_collect("dram__bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_global_atom.sum"); 
     
+    NPerf_metric_collect("lts__t_sectors_op_read.sum");
+    NPerf_metric_collect("lts__t_sectors_op_atom.sum");
+    NPerf_metric_collect("lts__t_sectors_op_red.sum");
+
+    NPerf_metric_collect("l1tex__average_t_sectors_per_request_pipe_lsu_mem_local_op_ld.ratio");
     // ------------ run baseline cuSpmm ----------------
     //input_dfs.c_cuSpmm_run(perfRes);
     //input_deg.c_cuSpmm_run(perfRes);
@@ -4624,9 +4630,9 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
 // v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 1 result per thread 
-#define flex_kernel flexspmm_cuda_k4_vec1_v31
+//#define flex_kernel flexspmm_cuda_k4_vec1_v31
 //v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp,  2 results per thread
-//#define flex_kernel flexspmm_cuda_k8_vec2_v32
+#define flex_kernel flexspmm_cuda_k8_vec2_v32
 // v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
 //#define flex_kernel flexspmm_cuda_k16_vec4_v33
 // v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
@@ -5031,11 +5037,19 @@ void run(DataLoader& input_vo){
               table.entry("aw", "%2d", act_wps);
               fprintf(tile_nperf,"%2d,", act_wps);
 
-              table.entry("bkt", "%3d", mat.empty_bucket );
-              fprintf(tile_nperf,"%3d,",  mat.empty_bucket );
+              if ( true ){
+                table.entry("bkt", "%3d", mat.empty_bucket );
+                fprintf(tile_nperf,"%3d,",  mat.empty_bucket );
+              }
+              
               if (false){ 
-                table.entry("atm", "%d", mat.atomic_op );
-                fprintf(tile_nperf,"%d,",  mat.atomic_op );
+                  double sh_ld = NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
+                  table.entry( "sh_ld", "%5.3f",sh_ld*1000/n_madd );
+                  
+                  int ld_trans_req = NPerf_metric_value_get("l1tex__average_t_sectors_per_request_pipe_lsu_mem_local_op_ld.ratio");
+                  table.entry("1rto", "%4d", ld_trans_req );
+                  fprintf(tile_nperf,"%4d,",  ld_trans_req );
+                
               }
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;
@@ -5062,25 +5076,31 @@ void run(DataLoader& input_vo){
               const double t_p_tr = n_tiles / n_t_rows;
 
               if ( false ) table.entry("t/tr", "%4.0f", t_p_tr);
-
+              
+              // C reads incured by reassignment.
+              // normalized by 4*mat.m*mat.k 
+              //table.entry("atm/r", "%f", mat.atomic_op*1.0*mat.k/mat.m );
+              //fprintf(tile_nperf,"%f,",  mat.atomic_op*1.0*mat.k/mat.m );
+              
+              
               // Number of nz per occupied tile column.
               const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
               // Worst-case: 1.  Ideal: Average degree.
-              if (false){
-                  table.entry("B-Re1", "%5.2f", nz_p_toc);
-                  fprintf(tile_nperf,"%5.2f,", nz_p_toc);
+              table.entry("B-Re1", "%5.2f", nz_p_toc);
+              fprintf(tile_nperf,"%5.2f,", nz_p_toc);
 
-                  table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
-                  fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
-                  
+              table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
+              fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
+              if (false){    
+                   
                   table.entry("C-", "%d", mat.n_col_sum);
-                  fprintf(tile_nperf,"%d,", mat.n_col_sum);
+                  fprintf(tile_nperf,"%d,", (int)mat.n_col_sum);
 
-                  table.entry("C~", "%d", mat.acc_col);
-                  fprintf(tile_nperf,"%d,", mat.acc_col);
+                  table.entry("C~/n", "%f", mat.acc_col*1.0/mat.m);
+                  fprintf(tile_nperf,"%f,", mat.acc_col*1.0/mat.m);
                   
                   table.entry("segs", "%d", n_segs);
-                  fprintf(tile_nperf,"%d,", n_segs);
+                  fprintf(tile_nperf,"%d,", (int)n_segs);
               }
               // Get and print elapsed time.
               //
@@ -5235,10 +5255,10 @@ void run(DataLoader& input_vo){
               const double c_loads = mat.atomic_op * 1.0 / mat.nnz / mat.k;
               
               if ( false ){
-                  const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
+                  //const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
                   // Loads per nz. ( r , c, edge weight)
-                  const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
-                  const int n_ld_nz = 3; 
+                  //const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
+                  //const int n_ld_nz = 3; 
                  
               } 
               const int n_ld_seg = mat.tm+1 + mat.tm+1;  // Loads per tile-segment. (segVoMap + grouped_tailSeg + seg_rowPtr)
@@ -5356,10 +5376,23 @@ void run(DataLoader& input_vo){
               // tile-level: ( group_info(2) * #sm + ( tile_rowPtr(tm+1) + voMap(tm) ) * #tiles ) * 4 / #ops 
               // nD = 4/u + 8/k + ( 2*sm + (tm+1 + tm) * #tiles) * 4 / (k * #nz)  
               double nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
-              double u = 4.0 / ( nD - 8.0/mat.k - ( 2*num_sm + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k) );
-              table.entry( "expBs", "%5.2f",u );
-              fprintf(tile_nperf, "%5.2f,",u);
-
+              double atom_bytes = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes_mem_global_op_atom.sum")*1.0 / n_madd;
+              assert((int)n_madd==mat.nnz*mat.k);
+              double u = 4.0 / ( nD - 8.0/mat.k - ( 2*(num_sm+1) + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k) - atom_bytes);
+              double meta = ( 2*(num_sm+1) + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k);
+              if (false){
+                  //table.entry( "nD", "%5.2f",nD );
+                  //fprintf(tile_nperf, "%5.2f,",nD );
+                  table.entry( "8/tk", "%5.2f",(8.0)/mat.k );
+                  fprintf(tile_nperf, "%5.2f,",(8.0)/mat.k );
+                  table.entry( "meta", "%5.2f",meta );
+                  fprintf(tile_nperf, "%5.2f,",meta );
+                  table.entry( "at", "%5.2f",atom_bytes );
+                  fprintf(tile_nperf, "%5.2f,",atom_bytes );
+              }
+              table.entry( "u", "%5.2f",u );
+              fprintf(tile_nperf, "%5.2f,",u );
+    
               table.entry
                 ( "Bytes", "%5.2f",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
@@ -5367,6 +5400,15 @@ void run(DataLoader& input_vo){
               fprintf(tile_nperf, "%5.2f,",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
                     / n_madd );
+              if ( false){
+                  table.entry
+                    ( "Trans", "%5.2f",
+                      (NPerf_metric_value_get("lts__t_sectors_op_read.sum") + NPerf_metric_value_get("lts__t_sectors_op_atom.sum") + NPerf_metric_value_get("Its__t_sectors_op_red.sum"))
+                        / n_madd );
+                  fprintf(tile_nperf, "%5.2f,",
+                      (NPerf_metric_value_get("lts__t_sectors_op_read.sum") + NPerf_metric_value_get("lts__t_sectors_op_atom.sum") + NPerf_metric_value_get("Its__t_sectors_op_red.sum"))
+                        / n_madd );
+              }
               if ( false ){
                   //const double n_bytes =
                   //  4 * ( n_t_rows * n_ld_trow
@@ -5461,8 +5503,8 @@ void run(DataLoader& input_vo){
                     //table.entry( "local_ld", "%7.1f",local_ld );
                     double local_st = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum");
                     //table.entry( "local_st", "%7.1f", local_st);
-                    double sh_ld = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
-                    //table.entry( "sh_ld", "%7.1f",sh_ld );
+                    double sh_ld = NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
+                    table.entry( "sh_ld", "%7.1f",sh_ld );
                     double sh_st = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum");
                     //table.entry( "sh_st", "%7.1f",sh_st );
                     double l1_ai = flops / (gld + gst + atm + local_ld + local_st + sh_ld + sh_st);
