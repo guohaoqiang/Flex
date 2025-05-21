@@ -5,6 +5,8 @@
 #include <stack>
 #include <iostream>
 #include <algorithm>
+#include <chrono>
+#include <random>
 #include <unordered_set>
 #include <unordered_map>
 #include <stdio.h>
@@ -70,11 +72,17 @@ class Mat : public Mat_POD{
     void stats_collect2(FILE *stream = nullptr);
     
 	void csr2tile();
+    void csr2_DiagTiling();
     void permute_segs();
     int checkSim(vector<int>&, vector<int>&);
     void dfsSegs();
     int checkSim2(map<int,int>&, vector<int>&);
     void sliWinSegs();
+
+    std::vector<unsigned int> alpha_colPtr;
+    std::vector<unsigned int> alpha_rowIdx;
+    std::vector<float> alpha_vals;
+    std::vector<unsigned int> alpha_cco;
 
 	std::vector<unsigned int> tileNnz;
 	std::vector<unsigned int> tileColIdx;

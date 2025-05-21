@@ -518,9 +518,16 @@ void Mat::sliWinSegs(){
     // DFS reorder segs
     // explore L1 reuse
     vector<bool> visited(n_segs,false);
+    
+    vector<int> sh_seg_id(n_segs);
+    std::iota(sh_seg_id.begin(),sh_seg_id.end(),0);
+    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+    std::default_random_engine eee(seed);
+    std::shuffle(sh_seg_id.begin(), sh_seg_id.end(), eee);
+
     vector<int> seg_ord;
     int window = 64; // expected active_warps 
-    for (int src=0; src<n_segs; ++src){
+    for (int src:sh_seg_id){
         if ( visited[src] )   continue;
         visited[src] = true;
        
@@ -642,7 +649,204 @@ void Mat::sliWinSegs(){
     swap(seg_rowPtr, seg_rowPtr1);
 }
 
+void Mat::csr2_DiagTiling(){
+    int device_id;
+    cudaDeviceProp prop;
+    cudaGetDevice( &device_id );
+    cudaGetDeviceProperties( &prop, device_id );
+    // int n_sm = prop.multiProcessorCount;
+    int n_sm = 114;
+    const int warps_per_sm = 32; // 32 warps per SM
+    const int wing_tiles = 300;
+    float alpha = 0.3;
+    /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
+    
+    // I assume 15 percent of nz/weights will covered in diagonal tiles
+    const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
+    
+    const int partitions_node = warps_per_sm * n_sm; // partitions along the width
+    const int nnz_p_diagonal_tile  = max(32,nnz_diagonal_tiles / partitions_node); 
+    printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
+    vector<int> tile_width(partitions_node,0);
+    // In the first round, we conly construct the diagonal tiles, whcih act as the central tiles
+    // for each SM. The diagonal tiles are constructed by exploring the row panel and col panel
+    // Each SM will have at least one tile
+    int mat_r_start = 0;
+    int warps_with_weights = 0;
+    for (int i=0; i<partitions_node; ++i){
+        mat_r_start += i? tile_width[i-1] : 0;
+        // not necessary to let all SMs have non-zeros/weights. e.g. assert(mat_r_start<m-1); 
+        // These SMs can process the last bucket directly
+        int nnz_current_diag_tile = 0;
+        int j = mat_r_start;
+        while (j<m && nnz_current_diag_tile<=(int)(0.95*nnz_p_diagonal_tile)){
+            // explore row_panel
+            for (int k=rowPtr[j]; colIdx[k]<=j; ++k){
+                if (colIdx[k]>=mat_r_start){
+                    nnz_current_diag_tile++;
+                }
+                if (colIdx[k]==j){
+                    break;
+                }
+            }
+            // explore col_panel
+            for (int k=mat_r_start; k<j; ++k){  // k is the row idx
+                int l=rowPtr[k]; 
+                while (l < rowPtr[k+1] && colIdx[l]<j){
+                    l++;
+                }
+                nnz_current_diag_tile += (colIdx[l]==j);
+            }
 
+            j++;
+            
+        }
+        warps_with_weights++;
+        tile_width[i] = j - mat_r_start;
+        // printf("tile_width[%d] = %d, nnz_current_diag_tile = %d\n",i,tile_width[i],nnz_current_diag_tile);
+    }
+    int verify_m = accumulate(tile_width.begin(), tile_width.end(), 0);
+    if (verify_m<m && tile_width.back()>0){
+        printf("alpha is too small ...  verify_m = %d, m = %d\n",verify_m,m);
+    }
+    assert(verify_m==m);
+    
+    // In the second round, we extend twenty more tiles for each diagonal tile.
+    // ten above the diagonal and ten below the diagonal
+    // weights/non-zeros for each warp are stored in CSC
+    vector<int> nnz_p_warp(partitions_node+1,0);
+    int row_accu_start = 0;
+    int nnz_colPtr = 0;
+    for (int i=0; i<partitions_node; ++i){
+        int row_start = row_accu_start;
+        if (i>wing_tiles) row_accu_start += tile_width[i-wing_tiles-1]; 
+
+        int row_end = row_accu_start;
+        for (int j=wing_tiles; j>0; --j){
+            if (i-j>=0){
+                row_end += tile_width[i-j];
+            }    
+        }
+        int col_start = row_end; // the diagonal tile is square
+        row_end += tile_width[i];
+        for (int j=1; j<=wing_tiles; ++j){
+            if (i+j+1<partitions_node){
+                row_end += tile_width[i+j+1];
+            }else{
+                break;
+            }
+        }
+
+        int col_end = col_start + tile_width[i];
+        // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
+        for (int j=col_start; j<col_end; ++j){
+            // visit each col_panel
+            alpha_colPtr.push_back(nnz_colPtr);
+            for (int k=row_start; k<row_end; ++k){  // k is the row idx
+                int l=rowPtr[k];
+                if ( colIdx[l]>j ){
+                    // no non-zero in this row falls into current tile
+                    // so we skip this row
+                    continue;
+                }
+                while ( l<rowPtr[k+1] && colIdx[l]<j ){
+                    l++;
+                }
+                if (l>=rowPtr[k+1]){
+                    // Already jump to next row
+                    continue;
+                }
+                if (colIdx[l]==j){
+                    // printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
+                    alpha_rowIdx.push_back(k);
+                    alpha_vals.push_back(vals[l]);
+                    nnz_p_warp[i]++;
+                    nnz_colPtr++;
+                }
+            }
+        }
+        // printf("nnz_p_warp[%d] = %d\n",i,nnz_p_warp[i]);
+    }
+    alpha_colPtr.push_back(nnz_colPtr);
+    assert(nnz_colPtr<=rowPtr[m]);
+    assert(alpha_rowIdx.size()==m+1);
+    // if there is an SM has no non-zero/weight,the following assert will fail
+    // assert(alpha_colPtr.size()==m+1);
+
+    // In the third round, we fill in the last bucket with the remaining weights/non-zeros.
+    // It can be merged with the second round, but I just want to keep it simple
+    // and easy to understand.
+    // The last bucket is used for workload balance among SMs
+    row_accu_start = 0;
+    for (int i=0; i<partitions_node; ++i){
+        int row_start = row_accu_start;
+        if (i>wing_tiles) row_accu_start += tile_width[i-wing_tiles-1]; 
+
+        int row_end = row_accu_start;
+        for (int j=wing_tiles; j>0; --j){
+            if (i-j>=0){
+                row_end += tile_width[i-j];
+            }    
+        }
+        int col_start = row_end; // the diagonal tile is square
+        row_end += tile_width[i];
+        for (int j=1; j<=wing_tiles; ++j){
+            if (i+j+1<partitions_node){
+                row_end += tile_width[i+j+1];
+            }else{
+                break;
+            }
+        }
+
+        int col_end = col_start + tile_width[i];
+        // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
+        for (int j=col_start; j<col_end; ++j){
+            for (int k=0; k<m; ++k){
+                if (k>=row_start && k<row_end){
+                    // skip the rows already covered in diagonal tiles (the second round)
+                    continue;
+                }
+                
+                int l=rowPtr[k];
+                if ( colIdx[l]>j ){
+                    // no non-zero in this row falls into current tile
+                    // so we skip this row
+                    continue;
+                }
+                while ( l<rowPtr[k+1] && colIdx[l]<j ){
+                    l++;
+                }
+                
+                if (l>=rowPtr[k+1]){
+                    // Already jump to next row
+                    continue;
+                }
+                if (colIdx[l]==j){
+                    // later, is it possible to compress row/column idex into 24 bits? 
+                    // [0, 2^24-1] = [0,  16,777,215]. (Amazon has 1,569,960 nodes)
+                    // and values in 16 bits?
+                    // 12 bytes -> 8 bytes
+                    // printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
+                    alpha_cco.push_back(k);
+                    alpha_cco.push_back(j);
+                    alpha_cco.push_back(vals[l]);
+                }
+            }
+        }
+    }
+    printf("empty_bucket percentage = %f\n",(1- warps_with_weights/(float)partitions_node)*100);
+    printf("nnz in main band = %f\n",alpha_rowIdx.size()/(float)rowPtr[m]*100); 
+    
+    if ( alpha_cco.size()/3+alpha_rowIdx.size() != rowPtr[m] ){
+        printf("alpha_cco.size() = %zu\n",alpha_cco.size());
+        printf("alpha_rowIdx.size() = %zu\n",alpha_rowIdx.size());
+        printf("alpha_vals.size() = %zu\n",alpha_vals.size());
+        printf("alpha_colPtr.size() = %zu\n",alpha_colPtr.size());
+        printf("alpha_cco.size()/3 = %zu, alpha_rowIdx.size() = %zu\n",alpha_cco.size()/3, alpha_rowIdx.size());
+    }
+    assert( alpha_cco.size()/3+alpha_rowIdx.size() == rowPtr[m] );
+    
+}
 
 void Mat::csr2tile(){
 
@@ -662,11 +866,11 @@ void Mat::csr2tile(){
 
     n_segs = segPtr.size()-1;
     if (print_bucket) printf("%d of %s, n_segs = %d\n",__LINE__, __FILE__, n_segs); 
-    bool seg_sort = true;
+    bool seg_sort = false;
     if (seg_sort) {
         //permute_segs();
-        dfsSegs();
-        //sliWinSegs();
+        //dfsSegs();
+       sliWinSegs();
     }
     
         int device_id;
@@ -949,7 +1153,7 @@ void Mat::csr2flex_Rmajor(int ridx){
 			//  #nze in the i-th row
 			
 			// c check is necessary because it constraines nze within the i-th row
-                        while ( c<rowPtr[i+1] && colIdx[c]<right ){
+            while ( c<rowPtr[i+1] && colIdx[c]<right ){
                 //char rc = 0;
                 int rc16 = 0;
 
