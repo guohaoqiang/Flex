@@ -657,7 +657,7 @@ void Mat::csr2_DiagTiling(){
     // int n_sm = prop.multiProcessorCount;
     int n_sm = 114;
     const int warps_per_sm = 32; // 32 warps per SM
-    const int wing_tiles = 300;
+    const int wing_tiles = 10;
     float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
     
@@ -769,9 +769,13 @@ void Mat::csr2_DiagTiling(){
     }
     alpha_colPtr.push_back(nnz_colPtr);
     assert(nnz_colPtr<=rowPtr[m]);
-    assert(alpha_rowIdx.size()==m+1);
     // if there is an SM has no non-zero/weight,the following assert will fail
     // assert(alpha_colPtr.size()==m+1);
+    if (alpha_colPtr.size()!=m+1){
+        printf("alpha_colPtr.size() = %zu\n",alpha_colPtr.size());
+        printf("nnz_colPtr = %d\n",nnz_colPtr);
+        printf("rowPtr[m] = %d\n",rowPtr[m]);
+    }
 
     // In the third round, we fill in the last bucket with the remaining weights/non-zeros.
     // It can be merged with the second round, but I just want to keep it simple

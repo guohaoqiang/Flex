@@ -4004,6 +4004,86 @@ void flexspmm_cuda_vec1_v35(){
         timing_end();
 }
 
+/* The following kernels are based on diagonal tiling */
+// template<int tm, int CF, int warps>
+// __global__
+// void alpha_wo_atomic_spmm_v36(){ 
+//     // requires preprocess dense mat B
+
+//     timing_start(); 
+    
+//     const Mat_POD& md = mat_dev;
+//     uint32_t sm_id = smid_get();
+//     const int global_wp_id = (blockDim.x>>32) * blockIdx.x + threadIdx.x>>5; //threadIdx.x / 32;
+//     const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+
+//     int weight_start = alpha_colPtr_dev[global_wp_id];
+//     int weights_in_pillar = alpha_colPtr_dev[global_wp_id+1] - weight_start;
+
+//     //const int th_p_row = 4;
+//     const int row_id = lane_id>>2; //lane_id / th_p_row; // 4 threads process a row
+//     int c_col = lane_id & 0x3; //lane_id % th_p_row;
+
+//     __shared__ int pillar_idx[2]; // two warps per block
+    
+//     int gold_row_id[tm];
+    
+//     int nsi = sm_id;
+//     // the sentinel tile-seg of the nsi-th SM
+//     const int tail_seg_idx = md.grouped_tailSeg_dev[nsi];
+//     while ( true ) {
+
+//         if ( nsi < md.sms && seg_idx[ wp_id ] >= tail_seg_idx ) { nsi = md.sms; continue; }
+//         if ( nsi == md.sms && seg_idx[ wp_id ] >= md.n_segs ) break;
+ 
+//         #pragma unroll
+//         for (int i=0; i<tm; ++i){
+//             gold_row_id[i] = md.segVoMap_dev[seg_idx[ wp_id ]*tm+i];
+//         }
+       
+//         // visit all rows of the segment
+//         // step, 32 / th_p_row
+//         for ( int r_idx = row_id; r_idx<tm; r_idx += 8 ){
+//             // the global idx of the first non-zero of this tile-seg 
+//             //int seg_cur_id = md.segPtr_dev[ seg_idx[ wp_id ] ];
+
+            
+//             int cur_rowPtr = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx ]; 
+//             int nnz_cur_row = md.seg_rowPtr_dev[ seg_idx[ wp_id ]*(tm+1) + r_idx + 1 ] - cur_rowPtr;
+            
+//             int actual_row = gold_row_id[ r_idx ] & 0x7fffffff;
+//             int atomicORnot = gold_row_id[ r_idx ] & (1<<31); // get MSB
+//             int addr = actual_row*md.k;
+            
+//             for ( int cc = c_col; cc<md.k; cc+=4 ){ 
+//                 float res = 0;
+//                 for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                 
+//                    // column & val 
+//                    float2 cv = reinterpret_cast<float2*>(md.segNzCV_dev)[ cur_rowPtr + z ];
+                   
+//                    float bv = md.shadow_b_dev[ (int)cv.x*md.k + cc ];
+//                    res += cv.y * bv; 
+                   
+//                 }    
+//                 // store results back  
+//                 if ( actual_row<md.m ){
+                    
+//                     if ( atomicORnot>>31 ){
+//                         atomicAdd( &md.mat_c_dev[ addr + cc ], res);
+//                     }else{
+//                         md.mat_c_dev[ addr + cc ] = res;
+//                     }
+//                 }
+//             }
+             
+//         } // end tile-seg row loop
+//     } // end tile-segs loops
+    
+//         timing_end();
+// }
+
+
 GPU_Info
 print_gpu_and_kernel_info()
 {
@@ -4577,7 +4657,7 @@ void run(DataLoader& input_vo){
        kernels.emplace_back(info.GET_INFO((k)),#kb,#k,sidx,nbx,nby,nt); }
 
     #define EXAMINE_KERNEL(kb,k,sidx,nbx,nby,nt) \
-        EXAMINE_KERNEL1(kb,k,sidx,input_vo,nbx,nby,nt);\
+        EXAMINE_KERNEL1(kb,k,sidx,input_vo,nbx,nby,nt);  \
         EXAMINE_KERNEL1(kb,k,sidx,input_rabbit,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_gorder,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_dfs,nbx,nby,nt);
@@ -4691,7 +4771,7 @@ void run(DataLoader& input_vo){
     
 #ifdef TM_1_2
         SPECIFY_KERNEL(flex_kernel, 28, NBX, NBY, NT);
-        SPECIFY_KERNEL(flex_kernel, 29, NBX, NBY, NT);
+        // SPECIFY_KERNEL(flex_kernel, 29, NBX, NBY, NT);
 #endif
 
 #ifdef CUBE4X4
@@ -4841,8 +4921,13 @@ void run(DataLoader& input_vo){
         assert( block_n_wps * wp_sz == threads );
         
         
-        spMats[id].csr2tile();
+        // spMats[id].csr2tile();
+        printf("Order: %s\n", input.vertex_order_abbr.c_str());
+        spMats[id].csr2_DiagTiling();
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
+        // continue for now
+        continue;
+
         mat.stats_collect2(tile_stats);
         //continue;
 
