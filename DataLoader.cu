@@ -361,6 +361,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
       while ( !stack.empty() )
         {
           auto& dst_iter = stack.back();
+          // search for the unvisited neighbor
           while ( dst_iter && vo_to_dfs[ dst_iter.front() ] )
             dst_iter.advance(1);
           if ( !dst_iter ) { stack.pop_back();  continue; }
@@ -376,7 +377,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 
       if ( rowPtr.size() > n ) break;
 
-      // Find a vertex that has not been searched.
+      // Find a vertex that has not been searched. (find the next root)
       while ( ++dfs_root_vo_idx < n && vo_to_dfs[dfs_root_vo_idx] );
       assert( dfs_root_vo_idx < n );
     }
@@ -395,16 +396,16 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
   //
   for ( auto src_vo: views::iota(size_t(0),n) )
     {
-      const auto src_dfs = vo_to_dfs[src_vo];
+      const auto src_dfs = vo_to_dfs[src_vo]; // DFS order of source vertex.
       const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
       assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
-
+      
       // Sort destinations.  Tiling algorithm needs dests sorted.
       vector< pair<float,uint> > perm;  perm.reserve(d);
       const auto e_idx_vo = dl.rowPtr[ src_vo ];
       for ( auto e: views::iota( e_idx_vo, e_idx_vo + d ) )
         perm.emplace_back( dl.vals[ e ], vo_to_dfs[ dl.col[ e ] ] );
-      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } ); // sort column in ascending order
 
       uint e_idx_dfs_i = rowPtr[src_dfs];
       for ( auto& [val, dst_new]: perm )

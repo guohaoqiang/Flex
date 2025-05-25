@@ -4007,7 +4007,7 @@ void flexspmm_cuda_vec1_v35(){
 /* The following kernels are based on diagonal tiling */
 // template<int tm, int CF, int warps>
 // __global__
-// void alpha_wo_atomic_spmm_v36(){ 
+// void alpha_w_atomic_spmm_v36(){ 
 //     // requires preprocess dense mat B
 
 //     timing_start(); 
@@ -4016,7 +4016,7 @@ void flexspmm_cuda_vec1_v35(){
 //     uint32_t sm_id = smid_get();
 //     const int global_wp_id = (blockDim.x>>32) * blockIdx.x + threadIdx.x>>5; //threadIdx.x / 32;
 //     const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
-
+    
 //     int weight_start = alpha_colPtr_dev[global_wp_id];
 //     int weights_in_pillar = alpha_colPtr_dev[global_wp_id+1] - weight_start;
 
@@ -4657,7 +4657,7 @@ void run(DataLoader& input_vo){
        kernels.emplace_back(info.GET_INFO((k)),#kb,#k,sidx,nbx,nby,nt); }
 
     #define EXAMINE_KERNEL(kb,k,sidx,nbx,nby,nt) \
-        EXAMINE_KERNEL1(kb,k,sidx,input_vo,nbx,nby,nt);  \
+        EXAMINE_KERNEL1(kb,k,sidx,input_vo,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_rabbit,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_gorder,nbx,nby,nt);\
         EXAMINE_KERNEL1(kb,k,sidx,input_dfs,nbx,nby,nt);
@@ -4770,8 +4770,8 @@ void run(DataLoader& input_vo){
         };
     
 #ifdef TM_1_2
-        SPECIFY_KERNEL(flex_kernel, 28, NBX, NBY, NT);
-        // SPECIFY_KERNEL(flex_kernel, 29, NBX, NBY, NT);
+        //SPECIFY_KERNEL(flex_kernel, 28, NBX, NBY, NT);
+        SPECIFY_KERNEL(flex_kernel, 29, NBX, NBY, NT);
 #endif
 
 #ifdef CUBE4X4
@@ -4921,12 +4921,12 @@ void run(DataLoader& input_vo){
         assert( block_n_wps * wp_sz == threads );
         
         
-        // spMats[id].csr2tile();
-        printf("Order: %s\n", input.vertex_order_abbr.c_str());
-        spMats[id].csr2_DiagTiling();
+        spMats[id].csr2tile();
+        // printf("Order: %s\n", input.vertex_order_abbr.c_str());
+        // spMats[id].csr2_DiagTiling();
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
         // continue for now
-        continue;
+        // continue;
 
         mat.stats_collect2(tile_stats);
         //continue;

@@ -657,11 +657,10 @@ void Mat::csr2_DiagTiling(){
     // int n_sm = prop.multiProcessorCount;
     int n_sm = 114;
     const int warps_per_sm = 32; // 32 warps per SM
-    const int wing_tiles = 10;
     float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
     
-    // I assume 15 percent of nz/weights will covered in diagonal tiles
+    // I assume 20 percent of nz/weights will covered in diagonal tiles
     const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
     
     const int partitions_node = warps_per_sm * n_sm; // partitions along the width
@@ -701,7 +700,7 @@ void Mat::csr2_DiagTiling(){
             j++;
             
         }
-        warps_with_weights++;
+        warps_with_weights += (nnz_current_diag_tile>0);
         tile_width[i] = j - mat_r_start;
         // printf("tile_width[%d] = %d, nnz_current_diag_tile = %d\n",i,tile_width[i],nnz_current_diag_tile);
     }
@@ -715,28 +714,22 @@ void Mat::csr2_DiagTiling(){
     // ten above the diagonal and ten below the diagonal
     // weights/non-zeros for each warp are stored in CSC
     vector<int> nnz_p_warp(partitions_node+1,0);
-    int row_accu_start = 0;
     int nnz_colPtr = 0;
+    int row_start = 0;
+    int row_end = 0;
+    int col_start = 0;
     for (int i=0; i<partitions_node; ++i){
-        int row_start = row_accu_start;
-        if (i>wing_tiles) row_accu_start += tile_width[i-wing_tiles-1]; 
-
-        int row_end = row_accu_start;
-        for (int j=wing_tiles; j>0; --j){
-            if (i-j>=0){
-                row_end += tile_width[i-j];
-            }    
-        }
-        int col_start = row_end; // the diagonal tile is square
-        row_end += tile_width[i];
-        for (int j=1; j<=wing_tiles; ++j){
-            if (i+j+1<partitions_node){
-                row_end += tile_width[i+j+1];
-            }else{
-                break;
+        if (i%warps_per_sm==0){
+            row_start = row_end;
+            for (int j=0; j<warps_per_sm; ++j){
+                if (i+j<partitions_node){
+                    row_end += tile_width[i+j];
+                }else{
+                    break;
+                }
             }
-        }
-
+        }   
+        
         int col_end = col_start + tile_width[i];
         // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
         for (int j=col_start; j<col_end; ++j){
@@ -765,13 +758,14 @@ void Mat::csr2_DiagTiling(){
                 }
             }
         }
+        col_start += tile_width[i];
         // printf("nnz_p_warp[%d] = %d\n",i,nnz_p_warp[i]);
     }
     alpha_colPtr.push_back(nnz_colPtr);
     assert(nnz_colPtr<=rowPtr[m]);
     // if there is an SM has no non-zero/weight,the following assert will fail
-    // assert(alpha_colPtr.size()==m+1);
-    if (alpha_colPtr.size()!=m+1){
+    assert(alpha_colPtr.size()==(m+1));
+    if (alpha_colPtr.size()!=(m+1)){
         printf("alpha_colPtr.size() = %zu\n",alpha_colPtr.size());
         printf("nnz_colPtr = %d\n",nnz_colPtr);
         printf("rowPtr[m] = %d\n",rowPtr[m]);
@@ -781,27 +775,20 @@ void Mat::csr2_DiagTiling(){
     // It can be merged with the second round, but I just want to keep it simple
     // and easy to understand.
     // The last bucket is used for workload balance among SMs
-    row_accu_start = 0;
+    row_end = 0;
+    col_start = 0;
     for (int i=0; i<partitions_node; ++i){
-        int row_start = row_accu_start;
-        if (i>wing_tiles) row_accu_start += tile_width[i-wing_tiles-1]; 
-
-        int row_end = row_accu_start;
-        for (int j=wing_tiles; j>0; --j){
-            if (i-j>=0){
-                row_end += tile_width[i-j];
-            }    
-        }
-        int col_start = row_end; // the diagonal tile is square
-        row_end += tile_width[i];
-        for (int j=1; j<=wing_tiles; ++j){
-            if (i+j+1<partitions_node){
-                row_end += tile_width[i+j+1];
-            }else{
-                break;
+        if (i%warps_per_sm==0){
+            row_start = row_end;
+            for (int j=0; j<warps_per_sm; ++j){
+                if (i+j<partitions_node){
+                    row_end += tile_width[i+j];
+                }else{
+                    break;
+                }
             }
-        }
-
+        }   
+        
         int col_end = col_start + tile_width[i];
         // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
         for (int j=col_start; j<col_end; ++j){
@@ -837,8 +824,9 @@ void Mat::csr2_DiagTiling(){
                 }
             }
         }
+        col_start += tile_width[i];
     }
-    printf("empty_bucket percentage = %f\n",(1- warps_with_weights/(float)partitions_node)*100);
+    printf("empty_bucket percentage = %f\n",(1- (float)warps_with_weights/partitions_node)*100);
     printf("nnz in main band = %f\n",alpha_rowIdx.size()/(float)rowPtr[m]*100); 
     
     if ( alpha_cco.size()/3+alpha_rowIdx.size() != rowPtr[m] ){
@@ -859,11 +847,16 @@ void Mat::csr2tile(){
 
     bool print_bucket = false;
 	int tileRows = (m+tm-1)/tm;
+    // const char* tiles_per_row_panel = "tiles_per_row_panel.csv";
+    // FILE *tile_nperf = fopen(tiles_per_row_panel,"aw");
+    vector<int> segs_per_row_panel(tileRows,0);
 	for (int i=0; i<tileRows; ++i){
 		//csr2flex_Rmajor(i);
 		//csr2flex_Cmajor(i);
 		//csr2regular(i);
+        int temp = segPtr.size();
         csr2seg_Cmajor(i);
+        segs_per_row_panel[i] = segPtr.size()-temp;
 	} 
 
     assert( nnz_csr == seg_rowPtr.back() );
@@ -892,26 +885,46 @@ void Mat::csr2tile(){
         assert( nnz == nnz_csr );
 
         int wkload = nnz / n_sm; 
+        int segload = n_segs / n_sm;
         int seg_head_sm = 0;
-        int seg_tail_sm;
+        int seg_tail_sm = 0;
         int validate_nnz = 0;
         
         // assign segs to each sm bucket
+        bool nnz_based_split = false;
+        bool row_based_split = true;
+        int panel_idx = 0;
         for (int i=0; i<n_sm; ++i){
             next_seg.push_back( seg_head_sm );
-            int nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
+            int nz = 0;
             
-            seg_tail_sm = seg_head_sm + 1;
-            while ( seg_tail_sm < n_segs && nz<(int)(0.98*wkload) ){
-                nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
-                seg_tail_sm++;
+            if (nnz_based_split){
+                nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
+                seg_tail_sm = seg_head_sm + 1;
+                while ( seg_tail_sm < n_segs && nz<(int)(0.98*wkload) ){
+                    nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
+                    seg_tail_sm++;
+                }
             }
+            if (row_based_split && (panel_idx<tileRows) ){
+                int current_bin_num_segs = segs_per_row_panel[panel_idx];  // current row panel
+                seg_tail_sm = seg_head_sm + current_bin_num_segs;
+                while ( ++panel_idx < tileRows ){
+                    if ( (segs_per_row_panel[panel_idx] + current_bin_num_segs) > segload ){
+                        break;
+                    }
+                    current_bin_num_segs += segs_per_row_panel[panel_idx];
+                    seg_tail_sm += segs_per_row_panel[panel_idx];
+                }
+                nz += (segPtr[seg_tail_sm] - segPtr[seg_head_sm]);
+            }
+            // printf("#sm = %d, panelID = %d / %d,seg_head_sm = %d, seg_tail_sm = %d, nz = %d / %d\n",i,panel_idx, tileRows, seg_head_sm,seg_tail_sm,nz,segPtr.back());
             validate_nnz += nz;
             grouped_tailSeg.push_back( min(n_segs,seg_tail_sm) );
             if ( seg_head_sm==min(n_segs,seg_tail_sm) ){
                 empty_bucket++;
             }
-            seg_head_sm = seg_tail_sm;
+            seg_head_sm = min(n_segs,seg_tail_sm);
         }
         
         // the last bucket is used for workload balance among SMs 
@@ -922,7 +935,7 @@ void Mat::csr2tile(){
         assert( validate_nnz==segPtr.back() );
         assert( grouped_tailSeg.size()==n_sm+1 );
         assert( next_seg.size()==n_sm+1 );
-    
+        //printf("empty_bucket = %d, balance_segs = %d, balance_row_panels = %d\n",empty_bucket, n_segs-seg_head_sm, tileRows-panel_idx);
 }
 void Mat::print3(int l){
     if ( true ){
