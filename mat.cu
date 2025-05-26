@@ -657,7 +657,8 @@ void Mat::csr2_DiagTiling(){
     // int n_sm = prop.multiProcessorCount;
     int n_sm = 114;
     const int warps_per_sm = 32; // 32 warps per SM
-    float alpha = 0.3;
+    const int wing_tiles = 10;
+    float alpha = 0.5;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
     
     // I assume 20 percent of nz/weights will covered in diagonal tiles
@@ -678,7 +679,7 @@ void Mat::csr2_DiagTiling(){
         // These SMs can process the last bucket directly
         int nnz_current_diag_tile = 0;
         int j = mat_r_start;
-        while (j<m && nnz_current_diag_tile<=(int)(0.95*nnz_p_diagonal_tile)){
+        while (j<m && nnz_current_diag_tile<=(int)(0.8*nnz_p_diagonal_tile)){
             // explore row_panel
             for (int k=rowPtr[j]; colIdx[k]<=j; ++k){
                 if (colIdx[k]>=mat_r_start){
@@ -702,7 +703,7 @@ void Mat::csr2_DiagTiling(){
         }
         warps_with_weights += (nnz_current_diag_tile>0);
         tile_width[i] = j - mat_r_start;
-        // printf("tile_width[%d] = %d, nnz_current_diag_tile = %d\n",i,tile_width[i],nnz_current_diag_tile);
+        //printf("tile_width[%d] = %d, nnz_current_diag_tile = %d\n",i,tile_width[i],nnz_current_diag_tile);
     }
     int verify_m = accumulate(tile_width.begin(), tile_width.end(), 0);
     if (verify_m<m && tile_width.back()>0){
@@ -715,23 +716,29 @@ void Mat::csr2_DiagTiling(){
     // weights/non-zeros for each warp are stored in CSC
     vector<int> nnz_p_warp(partitions_node+1,0);
     int nnz_colPtr = 0;
-    int row_start = 0;
-    int row_end = 0;
-    int col_start = 0;
+    int row_accu_start = 0;
     for (int i=0; i<partitions_node; ++i){
-        if (i%warps_per_sm==0){
-            row_start = row_end;
-            for (int j=0; j<warps_per_sm; ++j){
-                if (i+j<partitions_node){
-                    row_end += tile_width[i+j];
-                }else{
-                    break;
-                }
+        int row_start = row_accu_start;
+        int row_end = row_accu_start;
+        if (i>=wing_tiles) row_accu_start += tile_width[i-wing_tiles]; 
+
+        for (int j=wing_tiles; j>0; --j){
+            if (i-j>=0){
+                row_end += tile_width[i-j];
+            }    
+        }
+        int col_start = row_end; // the diagonal tile is square
+        row_end += tile_width[i];
+        for (int j=1; j<=wing_tiles; ++j){
+            if (i+j<partitions_node){
+                row_end += tile_width[i+j];
+            }else{
+                break;
             }
-        }   
+        }
         
         int col_end = col_start + tile_width[i];
-        // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
+        //printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
         for (int j=col_start; j<col_end; ++j){
             // visit each col_panel
             alpha_colPtr.push_back(nnz_colPtr);
@@ -750,7 +757,7 @@ void Mat::csr2_DiagTiling(){
                     continue;
                 }
                 if (colIdx[l]==j){
-                    // printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
+                    //printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
                     alpha_rowIdx.push_back(k);
                     alpha_vals.push_back(vals[l]);
                     nnz_p_warp[i]++;
@@ -758,7 +765,6 @@ void Mat::csr2_DiagTiling(){
                 }
             }
         }
-        col_start += tile_width[i];
         // printf("nnz_p_warp[%d] = %d\n",i,nnz_p_warp[i]);
     }
     alpha_colPtr.push_back(nnz_colPtr);
@@ -771,23 +777,31 @@ void Mat::csr2_DiagTiling(){
         printf("rowPtr[m] = %d\n",rowPtr[m]);
     }
 
+    //printf("the thrid round,.....\n");
     // In the third round, we fill in the last bucket with the remaining weights/non-zeros.
     // It can be merged with the second round, but I just want to keep it simple
     // and easy to understand.
     // The last bucket is used for workload balance among SMs
-    row_end = 0;
-    col_start = 0;
+    row_accu_start = 0;
     for (int i=0; i<partitions_node; ++i){
-        if (i%warps_per_sm==0){
-            row_start = row_end;
-            for (int j=0; j<warps_per_sm; ++j){
-                if (i+j<partitions_node){
-                    row_end += tile_width[i+j];
-                }else{
-                    break;
-                }
+        int row_start = row_accu_start;
+        int row_end = row_accu_start;
+        if (i>=wing_tiles) row_accu_start += tile_width[i-wing_tiles]; 
+        
+        for (int j=wing_tiles; j>0; --j){
+            if (i-j>=0){
+                row_end += tile_width[i-j];
+            }    
+        }
+        int col_start = row_end; // the diagonal tile is square
+        row_end += tile_width[i];
+        for (int j=1; j<=wing_tiles; ++j){
+            if (i+j<partitions_node){
+                row_end += tile_width[i+j];
+            }else{
+                break;
             }
-        }   
+        }  
         
         int col_end = col_start + tile_width[i];
         // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
@@ -817,14 +831,13 @@ void Mat::csr2_DiagTiling(){
                     // [0, 2^24-1] = [0,  16,777,215]. (Amazon has 1,569,960 nodes)
                     // and values in 16 bits?
                     // 12 bytes -> 8 bytes
-                    // printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
+                    //printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
                     alpha_cco.push_back(k);
                     alpha_cco.push_back(j);
                     alpha_cco.push_back(vals[l]);
                 }
             }
         }
-        col_start += tile_width[i];
     }
     printf("empty_bucket percentage = %f\n",(1- (float)warps_with_weights/partitions_node)*100);
     printf("nnz in main band = %f\n",alpha_rowIdx.size()/(float)rowPtr[m]*100); 

@@ -4921,12 +4921,12 @@ void run(DataLoader& input_vo){
         assert( block_n_wps * wp_sz == threads );
         
         
-        spMats[id].csr2tile();
-        // printf("Order: %s\n", input.vertex_order_abbr.c_str());
-        // spMats[id].csr2_DiagTiling();
+        // spMats[id].csr2tile();
+        printf("Order: %s\n", input.vertex_order_abbr.c_str());
+        spMats[id].csr2_DiagTiling();
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
         // continue for now
-        // continue;
+        continue;
 
         mat.stats_collect2(tile_stats);
         //continue;
