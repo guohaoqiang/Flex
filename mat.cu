@@ -658,7 +658,7 @@ void Mat::csr2_DiagTiling(){
     int n_sm = 114;
     const int warps_per_sm = 32; // 32 warps per SM
     const int wing_tiles = 10;
-    float alpha = 0.5;
+    float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
     
     // I assume 20 percent of nz/weights will covered in diagonal tiles
@@ -679,7 +679,7 @@ void Mat::csr2_DiagTiling(){
         // These SMs can process the last bucket directly
         int nnz_current_diag_tile = 0;
         int j = mat_r_start;
-        while (j<m && nnz_current_diag_tile<=(int)(0.8*nnz_p_diagonal_tile)){
+        while (j<m && nnz_current_diag_tile<=(int)(0.9*nnz_p_diagonal_tile)){
             // explore row_panel
             for (int k=rowPtr[j]; colIdx[k]<=j; ++k){
                 if (colIdx[k]>=mat_r_start){
@@ -715,141 +715,124 @@ void Mat::csr2_DiagTiling(){
     // ten above the diagonal and ten below the diagonal
     // weights/non-zeros for each warp are stored in CSC
     vector<int> nnz_p_warp(partitions_node+1,0);
-    int nnz_colPtr = 0;
-    int row_accu_start = 0;
-    for (int i=0; i<partitions_node; ++i){
-        int row_start = row_accu_start;
-        int row_end = row_accu_start;
-        if (i>=wing_tiles) row_accu_start += tile_width[i-wing_tiles]; 
+    int nnz_rowPtr = 0;
+    int col_accu_start = 0;
+    for (int i=0; i<warps_with_weights; ++i){
+        int col_start = col_accu_start;
+        int col_end = col_accu_start;
+        if (i>=wing_tiles) col_accu_start += tile_width[i-wing_tiles]; 
 
         for (int j=wing_tiles; j>0; --j){
             if (i-j>=0){
-                row_end += tile_width[i-j];
+                col_end += tile_width[i-j];
             }    
         }
-        int col_start = row_end; // the diagonal tile is square
-        row_end += tile_width[i];
+        int row_start = col_end; // the diagonal tile is square
+        col_end += tile_width[i];
         for (int j=1; j<=wing_tiles; ++j){
-            if (i+j<partitions_node){
-                row_end += tile_width[i+j];
+            if (i+j<warps_with_weights){
+                col_end += tile_width[i+j];
             }else{
                 break;
             }
         }
         
-        int col_end = col_start + tile_width[i];
+        int row_end = row_start + tile_width[i];
         //printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
-        for (int j=col_start; j<col_end; ++j){
+        for (int j=row_start; j<row_end; ++j){
             // visit each col_panel
-            alpha_colPtr.push_back(nnz_colPtr);
-            for (int k=row_start; k<row_end; ++k){  // k is the row idx
-                int l=rowPtr[k];
-                if ( colIdx[l]>j ){
-                    // no non-zero in this row falls into current tile
-                    // so we skip this row
+            alpha_rowPtr.push_back(nnz_rowPtr);
+            for (int k=rowPtr[j]; k<rowPtr[j+1]; ++k){  // k is the row idx
+                int l=colIdx[k];
+                if (l<col_start){
                     continue;
                 }
-                while ( l<rowPtr[k+1] && colIdx[l]<j ){
-                    l++;
+                if (l>=col_end){
+                    break;
                 }
-                if (l>=rowPtr[k+1]){
-                    // Already jump to next row
-                    continue;
-                }
-                if (colIdx[l]==j){
-                    //printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
-                    alpha_rowIdx.push_back(k);
-                    alpha_vals.push_back(vals[l]);
-                    nnz_p_warp[i]++;
-                    nnz_colPtr++;
-                }
+                
+                //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
+                alpha_colIdx.push_back(l);
+                alpha_vals.push_back(vals[k]);
+                nnz_p_warp[i]++;
+                nnz_rowPtr++;
             }
         }
-        // printf("nnz_p_warp[%d] = %d\n",i,nnz_p_warp[i]);
+        alpha_rowPtr.push_back(nnz_rowPtr);
+        //printf("nnz_p_warp[%d] = %d\n",i,nnz_p_warp[i]);
     }
-    alpha_colPtr.push_back(nnz_colPtr);
-    assert(nnz_colPtr<=rowPtr[m]);
+    assert(nnz_rowPtr<=rowPtr[m]);
     // if there is an SM has no non-zero/weight,the following assert will fail
-    assert(alpha_colPtr.size()==(m+1));
-    if (alpha_colPtr.size()!=(m+1)){
-        printf("alpha_colPtr.size() = %zu\n",alpha_colPtr.size());
-        printf("nnz_colPtr = %d\n",nnz_colPtr);
-        printf("rowPtr[m] = %d\n",rowPtr[m]);
+    if (alpha_rowPtr.size()!=(m+warps_with_weights)){
+        printf("alpha_rowPtr.size() = %zu\n",alpha_rowPtr.size());
+        printf("(m+warps_with_weights) = %d\n",(m+warps_with_weights));
     }
+    assert(alpha_rowPtr.size()==(m+warps_with_weights));
 
+    printf("empty_bucket percentage = %f\n",(1- (float)warps_with_weights/partitions_node)*100);
+    printf("nnz_band = %zu, nnz in main band = %f\n",alpha_colIdx.size(), (float)alpha_colIdx.size()/rowPtr[m]*100); 
     //printf("the thrid round,.....\n");
     // In the third round, we fill in the last bucket with the remaining weights/non-zeros.
     // It can be merged with the second round, but I just want to keep it simple
     // and easy to understand.
     // The last bucket is used for workload balance among SMs
-    row_accu_start = 0;
-    for (int i=0; i<partitions_node; ++i){
-        int row_start = row_accu_start;
-        int row_end = row_accu_start;
-        if (i>=wing_tiles) row_accu_start += tile_width[i-wing_tiles]; 
+    col_accu_start = 0;
+    for (int i=0; i<warps_with_weights; ++i){
+        int col_start = col_accu_start;
+        int col_end = col_accu_start;
+        if (i>=wing_tiles) col_accu_start += tile_width[i-wing_tiles]; 
         
         for (int j=wing_tiles; j>0; --j){
             if (i-j>=0){
-                row_end += tile_width[i-j];
+                col_end += tile_width[i-j];
             }    
         }
-        int col_start = row_end; // the diagonal tile is square
-        row_end += tile_width[i];
+        int row_start = col_end; // the diagonal tile is square
+        col_end += tile_width[i];
         for (int j=1; j<=wing_tiles; ++j){
-            if (i+j<partitions_node){
-                row_end += tile_width[i+j];
+            if (i+j<warps_with_weights){
+                col_end += tile_width[i+j];
             }else{
                 break;
             }
         }  
         
-        int col_end = col_start + tile_width[i];
+        int row_end = row_start + tile_width[i];
         // printf("row_start = %d, row_end = %d, col_start = %d, col_end = %d\n",row_start,row_end,col_start,col_end);
-        for (int j=col_start; j<col_end; ++j){
-            for (int k=0; k<m; ++k){
-                if (k>=row_start && k<row_end){
-                    // skip the rows already covered in diagonal tiles (the second round)
+        for (int j=row_start; j<row_end; ++j){
+            
+            // visit each col_panel
+            alpha_rowPtr.push_back(nnz_rowPtr);
+            for (int k=rowPtr[j]; k<rowPtr[j+1]; ++k){  // k is the row idx
+                int l=colIdx[k];
+                if (l>=col_start && l<col_end){
                     continue;
                 }
                 
-                int l=rowPtr[k];
-                if ( colIdx[l]>j ){
-                    // no non-zero in this row falls into current tile
-                    // so we skip this row
-                    continue;
-                }
-                while ( l<rowPtr[k+1] && colIdx[l]<j ){
-                    l++;
-                }
-                
-                if (l>=rowPtr[k+1]){
-                    // Already jump to next row
-                    continue;
-                }
-                if (colIdx[l]==j){
-                    // later, is it possible to compress row/column idex into 24 bits? 
-                    // [0, 2^24-1] = [0,  16,777,215]. (Amazon has 1,569,960 nodes)
-                    // and values in 16 bits?
-                    // 12 bytes -> 8 bytes
-                    //printf("r = %d, c = %d, val[%d] = %f\n",k,j,l,vals[l]);
-                    alpha_cco.push_back(k);
-                    alpha_cco.push_back(j);
-                    alpha_cco.push_back(vals[l]);
-                }
-            }
+                //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
+                alpha_colIdx.push_back(l);
+                alpha_vals.push_back(vals[k]);
+                nnz_p_warp[i]++;
+                nnz_rowPtr++;
+            } 
         }
+        alpha_rowPtr.push_back(nnz_rowPtr);
     }
-    printf("empty_bucket percentage = %f\n",(1- (float)warps_with_weights/partitions_node)*100);
-    printf("nnz in main band = %f\n",alpha_rowIdx.size()/(float)rowPtr[m]*100); 
     
-    if ( alpha_cco.size()/3+alpha_rowIdx.size() != rowPtr[m] ){
-        printf("alpha_cco.size() = %zu\n",alpha_cco.size());
-        printf("alpha_rowIdx.size() = %zu\n",alpha_rowIdx.size());
-        printf("alpha_vals.size() = %zu\n",alpha_vals.size());
-        printf("alpha_colPtr.size() = %zu\n",alpha_colPtr.size());
-        printf("alpha_cco.size()/3 = %zu, alpha_rowIdx.size() = %zu\n",alpha_cco.size()/3, alpha_rowIdx.size());
+    assert(alpha_rowPtr.size()==2*(m+warps_with_weights));
+    assert(alpha_colIdx.size()==alpha_vals.size());
+    assert(alpha_vals.size()==nnz_rowPtr);
+    assert(nnz_rowPtr==rowPtr[m]);
+    if ( alpha_rowPtr.size()!=2*(m+warps_with_weights) ||
+         alpha_colIdx.size()!=alpha_vals.size() ||
+         alpha_vals.size()!=nnz_rowPtr ||
+         nnz_rowPtr!=rowPtr[m] ){
+        printf("alpha_rowPtr.size() = %zu, expect = %d\n", alpha_rowPtr.size(), 2*(m+warps_with_weights));
+        printf("alpha_colIdx.size() = %zu, alpha_vals.size() = %zu, nnz_rowPtr = %d\n",
+                alpha_colIdx.size(),alpha_vals.size(),nnz_rowPtr);
+        printf("rowPtr[m] = %d\n",rowPtr[m]);
+        
     }
-    assert( alpha_cco.size()/3+alpha_rowIdx.size() == rowPtr[m] );
     
 }
 

@@ -84,6 +84,9 @@ class Mat : public Mat_POD{
     std::vector<float> alpha_vals;
     std::vector<unsigned int> alpha_cco;
 
+    std::vector<unsigned int> alpha_rowPtr;
+    std::vector<unsigned int> alpha_colIdx;
+
 	std::vector<unsigned int> tileNnz;
 	std::vector<unsigned int> tileColIdx;
 	std::vector<float> newVals;
