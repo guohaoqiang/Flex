@@ -4,7 +4,7 @@
 
 #include <ranges>
 
-constexpr bool opt_debug = false;
+constexpr bool opt_debug = true;
 
 DataLoader::DataLoader(const std::string& data_path, const int di)
   :dl_original(this),dim(di){
@@ -200,7 +200,7 @@ DataLoader::cuda_alloc_cpy()
             for (int j=0; j<dim; ++j){
 
               if ( opt_debug )
-                cpuX.push_back(1);
+                cpuX.push_back(i);
               else{
                 cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
               }
