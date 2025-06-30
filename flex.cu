@@ -4918,7 +4918,7 @@ void run(DataLoader& input_vo){
                  ki.cfa.localSizeBytes, ki.cfa.sharedSizeBytes );
         }
 
-    const char* stats_file_name = "flex-tile-stats1.log";
+    const char* stats_file_name = "flex-tile-stats2.log";
     FILE *tile_stats = fopen(stats_file_name,"w");
     const char* nperf_file_name = "flex-tile-nperf.csv";
     FILE *tile_nperf = fopen(nperf_file_name,"aw");

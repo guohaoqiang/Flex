@@ -690,7 +690,7 @@ void Mat::csr2_DiagTiling(){
     float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
 
-    // I assume 20 percent of nz/weights will be covered in diagonal tiles
+    // I assume 30 percent of nz/weights will be covered in diagonal tiles
     const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
     
     const int partitions_node = warps_per_sm * n_sm; // partitions along the width
@@ -836,6 +836,7 @@ void Mat::csr2_DiagTiling(){
     // It can be merged with the second round, but I just want to keep it simple
     // and easy to understand.
     // The last bucket is used for workload balance among SMs
+    int target_nnz_per_wp = (rowPtr[m]-alpha_colIdx.size())/2/(partitions_node-warps_with_weights);
     col_accu_start = 0;
     int pillars_in_total = warps_with_weights;
     int id_row_pillar = 0;
@@ -846,8 +847,12 @@ void Mat::csr2_DiagTiling(){
     assert(prefix_sum_tile_width[warps_with_weights]==m);
     int col_start = 0;
     int col_end = tile_width[0];
+    int nnz_current_pillar = 0;
+    vector<int> temp_alpha_rowPtr;
+    vector<int> temp_segVoMap;
+    int rows_in_current_pillar = 0;
     for (int i=0; i<m; ++i){
-        
+        rows_in_current_pillar++;
         assert(id_row_pillar<=warps_with_weights);
         if (i>=prefix_sum_tile_width[id_row_pillar]){
             col_start = col_accu_start;
@@ -870,13 +875,6 @@ void Mat::csr2_DiagTiling(){
             }
             id_row_pillar++;  
         }
-        // if (id_row_pillar>warps_with_weights){
-        //     printf("id_row_pillar = %d, i = %d, col_start = %d, col_end = %d, tile_width[%d] = %d\n",
-        //             id_row_pillar,i,col_start,col_end,id_row_pillar,tile_width[id_row_pillar]);
-        // }
-        int nnz_current_pillar = 0;
-        vector<int> temp_alpha_rowPtr;
-        vector<int> temp_segVoMap;    
         
         int entries_in_row = 0;
         temp_alpha_rowPtr.push_back(nnz_rowPtr);
@@ -908,15 +906,18 @@ void Mat::csr2_DiagTiling(){
         }  
         
         
-        if (nnz_current_pillar){
+        if (nnz_current_pillar>=(int)(0.8*target_nnz_per_wp) || i==m-1){
             for (auto & rid: temp_alpha_rowPtr){
                 alpha_rowPtr.push_back(rid);
             }
+            temp_alpha_rowPtr.clear();
             for (auto & vm: temp_segVoMap){
                 segVoMap.push_back(vm);
             }
+            temp_segVoMap.clear();
             pillars_in_total++;
-            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + 1);
+            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + rows_in_current_pillar);
+            rows_in_current_pillar = 0;
         }
     }
    
