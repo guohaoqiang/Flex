@@ -684,7 +684,7 @@ void Mat::csr2_DiagTiling(){
     cudaGetDeviceProperties( &prop, device_id );
     int n_sm = prop.multiProcessorCount;
     sms = n_sm;
-    // int n_sm = 114;
+    //int n_sm = 2;
     const int warps_per_sm = 64; // 32 blocks per SM
     const int wing_tiles = 10;
     float alpha = 0.3;
@@ -697,8 +697,11 @@ void Mat::csr2_DiagTiling(){
     const int nnz_p_diagonal_tile  = max(32,nnz_diagonal_tiles / partitions_node); 
     //printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
     vector<int> tile_width(partitions_node,0);
-    // In the first round, we conly construct the diagonal tiles, whcih act as the central tiles
-    // for each SM. The diagonal tiles are constructed by exploring the row panel and col panel
+
+    // In the first round, we conly construct the diagonal tiles,
+    // whcih act as the central tiles for each SM. The diagonal tiles
+    // are constructed by exploring the row panel and col panel
+    //
     // Each SM will have at least one tile
     int mat_r_start = 0;
     int warps_with_weights = 0;
@@ -723,6 +726,11 @@ void Mat::csr2_DiagTiling(){
                 int l=rowPtr[k]; 
                 while (l < rowPtr[k+1] && colIdx[l]<j){
                     l++;
+                }
+                // DMK: Should code check for l < rowPtr[k+1] ?
+                // Haoqiang: Yes, it should, but I haven't ran into errors related to it. 
+                if (l>=rowPtr[k+1]){
+                    continue;
                 }
                 nnz_current_diag_tile += (colIdx[l]==j);
             }
@@ -802,6 +810,7 @@ void Mat::csr2_DiagTiling(){
                 segVoMap.push_back( voMp[j] );
             }
         }
+        assert( nnz_p_warp[i] );
         if (nnz_p_warp[i]){
             alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + tile_width[i]);
         } 
@@ -829,63 +838,75 @@ void Mat::csr2_DiagTiling(){
     // The last bucket is used for workload balance among SMs
     col_accu_start = 0;
     int pillars_in_total = warps_with_weights;
-    for (int i=0; i<warps_with_weights; ++i){
-        int col_start = col_accu_start;
-        int col_end = col_accu_start;
-        if (i>=wing_tiles) col_accu_start += tile_width[i-wing_tiles]; 
+    int id_row_pillar = 0;
+    vector<int> prefix_sum_tile_width(warps_with_weights+1,0);
+    for (int i=1; i<=warps_with_weights; ++i){
+        prefix_sum_tile_width[i] = prefix_sum_tile_width[i-1] + tile_width[i-1];
+    }
+    assert(prefix_sum_tile_width[warps_with_weights]==m);
+    int col_start = 0;
+    int col_end = tile_width[0];
+    for (int i=0; i<m; ++i){
         
-        for (int j=wing_tiles; j>0; --j){
-            if (i-j>=0){
-                col_end += tile_width[i-j];
-            }    
-        }
-        int row_start = col_end; // the diagonal tile is square
-        col_end += tile_width[i];
-        for (int j=1; j<=wing_tiles; ++j){
-            if (i+j<warps_with_weights){
-                col_end += tile_width[i+j];
-            }else{
-                break;
+        assert(id_row_pillar<=warps_with_weights);
+        if (i>=prefix_sum_tile_width[id_row_pillar]){
+            col_start = col_accu_start;
+            col_end = col_accu_start;
+            if (id_row_pillar>=wing_tiles) col_accu_start += tile_width[id_row_pillar-wing_tiles]; 
+            
+            for (int j=wing_tiles; j>0; --j){
+                if (id_row_pillar-j>=0){
+                    col_end += tile_width[id_row_pillar-j];
+                }    
             }
-        }  
         
-        int row_end = row_start + tile_width[i];
+            col_end += tile_width[id_row_pillar];
+            for (int j=1; j<=wing_tiles; ++j){
+                if (id_row_pillar+j<warps_with_weights){
+                    col_end += tile_width[id_row_pillar+j];
+                }else{
+                    break;
+                }
+            }
+            id_row_pillar++;  
+        }
+        // if (id_row_pillar>warps_with_weights){
+        //     printf("id_row_pillar = %d, i = %d, col_start = %d, col_end = %d, tile_width[%d] = %d\n",
+        //             id_row_pillar,i,col_start,col_end,id_row_pillar,tile_width[id_row_pillar]);
+        // }
         int nnz_current_pillar = 0;
         vector<int> temp_alpha_rowPtr;
-        vector<int> temp_segVoMap;
-        for (int j=row_start; j<row_end; ++j){
-            
-            // visit each col_panel
-            int entries_in_row = 0;
-            temp_alpha_rowPtr.push_back(nnz_rowPtr);
-            
-            for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){  // k is the row idx
-                int l=colIdx[kk];
-                if (l>=col_start && l<col_end){
-                    continue;
-                }
-                
-                //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
-                assert(alpha_colIdx.size()==alpha_vals.size() && alpha_vals.size()==nnz_rowPtr);
-                alpha_colIdx.push_back(l);
-                alpha_vals.push_back(vals[kk]);
-                entries_in_row++;
-                nnz_p_warp[i]++;
-                
-                nnz_rowPtr++;
-                nnz_current_pillar++;
+        vector<int> temp_segVoMap;    
+        
+        int entries_in_row = 0;
+        temp_alpha_rowPtr.push_back(nnz_rowPtr);
+        for (int kk=rowPtr[i]; kk<rowPtr[i+1]; ++kk){  // kk is the row idx
+            int l=colIdx[kk];
+            if (l>=col_start && l<col_end){
+                continue;
             }
             
-            if ( entries_in_row>=0 && entries_in_row<(rowPtr[j+1]-rowPtr[j]) ){
-                // if the #nz in a specific row of a seg 
-                // is less than that of the whole row,
-                // the row requires "atomic add".
-                // use MSB to mark it.
-                temp_segVoMap.push_back( voMp[j] | (1<<31) );
-            }else{ 
-                temp_segVoMap.push_back( voMp[j] );
-            }  
+            //printf("r = %d, c = %d, val[%d] = %f\n",i,l,kk,vals[kk]);
+            assert(alpha_colIdx.size()==alpha_vals.size() && alpha_vals.size()==nnz_rowPtr);
+            alpha_colIdx.push_back(l);
+            alpha_vals.push_back(vals[kk]);
+            entries_in_row++;
+            nnz_p_warp[id_row_pillar]++;
+            
+            nnz_rowPtr++;
+            nnz_current_pillar++;
         }
+        
+        if ( entries_in_row>=0 && entries_in_row<(rowPtr[i+1]-rowPtr[i]) ){
+            // if the #nz in a specific row of a seg 
+            // is less than that of the whole row,
+            // the row requires "atomic add".
+            // use MSB to mark it.
+            temp_segVoMap.push_back( voMp[i] | (1<<31) );
+        }else{ 
+            temp_segVoMap.push_back( voMp[i] );
+        }  
+        
         
         if (nnz_current_pillar){
             for (auto & rid: temp_alpha_rowPtr){
@@ -895,7 +916,7 @@ void Mat::csr2_DiagTiling(){
                 segVoMap.push_back(vm);
             }
             pillars_in_total++;
-            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + tile_width[i]);
+            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + 1);
         }
     }
    
@@ -913,7 +934,6 @@ void Mat::csr2_DiagTiling(){
                 alpha_colIdx.size(),alpha_vals.size(),nnz_rowPtr);
         printf("alpha_pillarIdx.size() = %zu, expect = %d\n",alpha_pillarIdx.size(),n_sm+2);
         printf("segVoMap.size()+1 = %zu, alpha_rowPtr.size() = %zu\n",segVoMap.size()+1,alpha_rowPtr.size());
-        
     }
     assert(alpha_colIdx.size()==alpha_vals.size());
     assert(alpha_vals.size()==nnz_rowPtr);
@@ -934,6 +954,7 @@ Mat::alpha_stats_collect(FILE *stream)
   
   // expect perfect reuse within a pillar
   n_col_sum = 0;
+  
   for ( uint pillar_idx = 0; pillar_idx < n_pillars; pillar_idx++ )
     {
       unordered_set<int> colset; 
@@ -941,8 +962,8 @@ Mat::alpha_stats_collect(FILE *stream)
         colset.insert(alpha_colIdx[i]);
       }
       n_col_sum += colset.size();
-    }
-
+    } 
+ 
   // expect perfect reuse within an SM
   // Assume workloads in the last queue (used for workload balance) are processed in an SM
   acc_col = 0;
@@ -957,6 +978,84 @@ Mat::alpha_stats_collect(FILE *stream)
   }
 
   for ( uint32_t v: segVoMap ) if ( v & (1u<<31) ) atomic_op++;
+
+  const int n_sms = alpha_pillarIdx.size()-2;
+  const int n_dtiles = alpha_pillarIdx[n_sms];
+
+  int n_wps_sm_max = 0;
+  for ( int i=0; i<n_sms; i++ )
+    set_max( n_wps_sm_max, alpha_pillarIdx[i+1] - alpha_pillarIdx[i] );
+  int n_wps_assumed = n_wps_sm_max * n_sms;
+
+  vector<int> work_p_sm(n_sms);
+  vector<int> work_p_wp;
+  work_p_wp.reserve(n_wps_assumed);
+
+  int n_elts_array = alpha_vals.size();
+  assert( n_elts_array == nnz );
+
+  int n_elts_static = 0;
+  int n_elts_sm_max = 0;
+  int n_elts_wp_max = 0;
+  int n_sms_idle = 0;
+
+  for ( int i=0; i<n_sms; i++ )
+    {
+      int dtile_start = alpha_pillarIdx[i];
+      int dtile_stop = alpha_pillarIdx[i+1];
+      int n_elts = 0;
+      int n_elts2 = alpha_rowPtr[alpha_pillar_rowPtr[dtile_stop]] -
+        alpha_rowPtr[alpha_pillar_rowPtr[dtile_start]];
+      if ( !n_elts2 ) n_sms_idle++;
+      for ( int j=dtile_start; j<dtile_stop; j++ )
+        {
+          int row_start = alpha_pillar_rowPtr[j];
+          int row_stop = alpha_pillar_rowPtr[j+1];
+          int n_elts_wp = alpha_rowPtr[row_stop] - alpha_rowPtr[row_start];
+          work_p_wp.push_back(n_elts_wp);
+          set_max( n_elts_wp_max, n_elts_wp );
+          n_elts += n_elts_wp;
+        }
+      assert( n_elts == n_elts2 );
+      set_max( n_elts_sm_max, n_elts );
+      work_p_sm[i] = n_elts;
+      n_elts_static += n_elts;
+    }
+
+  while ( work_p_wp.size() < n_wps_assumed ) work_p_wp.push_back(0);
+
+  ranges::make_heap(work_p_wp, ranges::greater() ); // min_heap
+
+  int n_elts_wq = 0;
+  int wq_start = alpha_pillarIdx[n_sms];
+  int wq_stop = alpha_pillarIdx[n_sms+1];
+  for ( int j = wq_start; j < wq_stop; j++ )
+    {
+      int n_elts = alpha_rowPtr[alpha_pillar_rowPtr[j+1]] -
+        alpha_rowPtr[alpha_pillar_rowPtr[j]];
+      work_p_wp[0] += n_elts;
+      n_elts_wq += n_elts;
+      ranges::pop_heap(work_p_wp,ranges::greater() );
+      ranges::push_heap(work_p_wp,ranges::greater() );
+    }
+  ranges::sort_heap(work_p_wp,ranges::greater() );
+
+  assert( n_elts_wq + n_elts_static == n_elts_array );
+
+  double sm_imb_pct = 1e2 * n_elts_sm_max * n_sms / n_elts_static - 100;
+  double wp_sta_imb_pct =
+    1e2 * n_elts_wp_max * n_wps_assumed / n_elts_static - 100;
+  double wp_all_imb_pct =
+    1e2 * work_p_wp[0] * n_wps_assumed / n_elts_array - 100;
+  fprintf(stream,
+          " %d sms (%d idle), %.0f%% imb;  static work %d dtiles, %.0f%% imb.\n",
+          n_sms, n_sms_idle, sm_imb_pct, n_dtiles, wp_sta_imb_pct );
+  fprintf(stream,
+          " Work %.0f%% static, all work: %.0f%% wp imb\n",
+          1e2 * n_elts_static / n_elts_array,
+          wp_all_imb_pct );
+
+  fprintf(stream, " %d pillars\n", n_pillars );
 
 }
 

@@ -4918,7 +4918,7 @@ void run(DataLoader& input_vo){
                  ki.cfa.localSizeBytes, ki.cfa.sharedSizeBytes );
         }
 
-    const char* stats_file_name = "flex-tile-stats.log";
+    const char* stats_file_name = "flex-tile-stats1.log";
     FILE *tile_stats = fopen(stats_file_name,"w");
     const char* nperf_file_name = "flex-tile-nperf.csv";
     FILE *tile_nperf = fopen(nperf_file_name,"aw");
@@ -4942,11 +4942,13 @@ void run(DataLoader& input_vo){
         // spMats[id].csr2tile();
         //printf("Order: %s\n", input.vertex_order_abbr.c_str());
         spMats[id].csr2_DiagTiling();
+        
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
         
         //mat.stats_collect2(tile_stats);
+        
         mat.alpha_stats_collect(tile_stats);
-
+        
         fprintf(tile_stats,"\n");
         if ( table.num_lines == 0 ){
            printf("block dim: %d\n", threads);
