@@ -4942,7 +4942,6 @@ void run(DataLoader& input_vo){
         // spMats[id].csr2tile();
         //printf("Order: %s\n", input.vertex_order_abbr.c_str());
         spMats[id].csr2_DiagTiling();
-        
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
         
         //mat.stats_collect2(tile_stats);
@@ -5110,8 +5109,8 @@ void run(DataLoader& input_vo){
             // times longer than it would be if the workload were
             // perfectly balanced.
 
-              table.entry("Ord", "%3s", input.vertex_order_abbr);
-              fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
+            table.entry("Ord", "%3s", input.vertex_order_abbr);
+            fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
             //   table.entry("tm", "%3d", spMats[id].tm);
             //   fprintf(tile_nperf,"%3d,", spMats[id].tm);
 
@@ -5389,11 +5388,11 @@ void run(DataLoader& input_vo){
             //         + 1.0*n_ld_insn_b_elt / nz_p_toc
             //         + c_loads;
 
-            // term1, pillar level loads, pillar_rowPtr (#pillars+1) + pillarIdx (sm+2) 
+            // term1, pillar level loads, pillar_rowPtr (#pillars+1) + pillarIdx (sm+2) + counter (sms+1)
             // term2, non-zero loads, the number of weights (nnz) + weight columns (nnz)
             // term3, B loads, 
             // term4, atomic update C
-              const double n_ld_p_madd = (mat.alpha_pillar_rowPtr.size() + mat.alpha_pillarIdx.size())/ mat.nnz / mat.k
+              const double n_ld_p_madd = (mat.alpha_pillar_rowPtr.size() + mat.alpha_pillarIdx.size() + mat.sms+1)/ mat.nnz / mat.k
                     + 2.0 / mat.k
                     + 1.0*n_ld_insn_b_elt / nz_p_toc
                     + c_loads;   
@@ -5499,16 +5498,19 @@ void run(DataLoader& input_vo){
             //   double u = 4.0 / ( nD - 8.0/mat.k - ( 2*(num_sm+1) + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k) - atom_bytes);
             //   double meta = ( 2*(num_sm+1) + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k);
               
-              // pillar level: (pillarIdx.size() + pillar_rowPtr.size())*4/#ops
-              // nD = 4/u + 2/k + (mat.alpha_pillar_rowPtr.size() + mat.alpha_pillarIdx.size())*4/(mat.nnz*mat.k)
-              double u = 4.0 / ( nD - 2.0/mat.k - (mat.alpha_pillar_rowPtr.size() + mat.alpha_pillarIdx.size())*4.0 / (mat.nnz*mat.k) - atom_bytes);
+              // pillar level: (2*alpha_pillarIdx_dev.size()*32 + 2*pillar_rowPtr.size()*32 )*4/#ops
+              //        2*alpha_pillarIdx_dev.size()*32: each entry of alpha_pillarIdx_dev is loaded by 32 threads twice (head & tail)
+              //        2*alpha_pillar_rowPtr_dev.size()*32: each entry of alpha_pillar_rowPtr_dev is loaded by 32 threads twice (head & tail)
+              // atom_bytes: atomic update C + counter_dev
+              // nD = 4/u + 8/k + pillar_level + atom_bytes
+              double u = 4.0 / ( nD - 8.0/mat.k - (2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd - atom_bytes );
               if (false){
-                  //table.entry( "nD", "%5.2f",nD );
-                  //fprintf(tile_nperf, "%5.2f,",nD );
+                  table.entry( "nD", "%5.2f",nD );
+                  fprintf(tile_nperf, "%5.2f,",nD );
                   table.entry( "8/tk", "%5.2f",(8.0)/mat.k );
                   fprintf(tile_nperf, "%5.2f,",(8.0)/mat.k );
-                  //table.entry( "meta", "%5.2f",meta );
-                  //fprintf(tile_nperf, "%5.2f,",meta );
+                  table.entry( "meta", "%5.2f",(2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd );
+                  fprintf(tile_nperf, "%5.2f,",(2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd );
                   table.entry( "at", "%5.2f",atom_bytes );
                   fprintf(tile_nperf, "%5.2f,",atom_bytes );
               }

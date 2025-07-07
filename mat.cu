@@ -686,16 +686,16 @@ void Mat::csr2_DiagTiling(){
     sms = n_sm;
     //int n_sm = 2;
     const int warps_per_sm = 64; // 32 blocks per SM
-    const int wing_tiles = 10;
+    
     float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
 
     // I assume 30 percent of nz/weights will be covered in diagonal tiles
     const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
-    
+    bool tuning = false;
     const int partitions_node = warps_per_sm * n_sm; // partitions along the width
     const int nnz_p_diagonal_tile  = max(32,nnz_diagonal_tiles / partitions_node); 
-    //printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
+    if (tuning) printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
     vector<int> tile_width(partitions_node,0);
 
     // In the first round, we conly construct the diagonal tiles,
@@ -705,34 +705,42 @@ void Mat::csr2_DiagTiling(){
     // Each SM will have at least one tile
     int mat_r_start = 0;
     int warps_with_weights = 0;
+    vector<unordered_set<int>> alpha_columns_per_sm(n_sm, unordered_set<int>());
+    unordered_map<int,unordered_set<int>> duplicate_sparse_mat;
     for (int i=0; i<partitions_node; ++i){
         mat_r_start += i? tile_width[i-1] : 0;
         // not necessary to let all SMs have non-zeros/weights. e.g. assert(mat_r_start<m-1); 
         // These SMs can process the last bucket directly
         int nnz_current_diag_tile = 0;
         int j = mat_r_start;
-        while (j<m && nnz_current_diag_tile<=(int)(0.9*nnz_p_diagonal_tile)){
+        while (j<m && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
             // explore row_panel
-            for (int k=rowPtr[j]; colIdx[k]<=j; ++k){
-                if (colIdx[k]>=mat_r_start){
+            for (int kk=rowPtr[j]; colIdx[kk]<=j; ++kk){
+                if (colIdx[kk]>=mat_r_start){
                     nnz_current_diag_tile++;
+                    alpha_columns_per_sm[i/warps_per_sm].insert(colIdx[kk]); //key: sm_idx, value: set of col idx
+                    duplicate_sparse_mat[j].insert(colIdx[kk]);  // key: row idx, value: set of col idx
                 }
-                if (colIdx[k]==j){
+                if (colIdx[kk]==j){
                     break;
                 }
             }
             // explore col_panel
-            for (int k=mat_r_start; k<j; ++k){  // k is the row idx
-                int l=rowPtr[k]; 
-                while (l < rowPtr[k+1] && colIdx[l]<j){
+            for (int kk=mat_r_start; kk<j; ++kk){  // kk is the row idx
+                int l=rowPtr[kk]; 
+                while (l < rowPtr[kk+1] && colIdx[l]<j){
                     l++;
                 }
                 // DMK: Should code check for l < rowPtr[k+1] ?
                 // Haoqiang: Yes, it should, but I haven't ran into errors related to it. 
-                if (l>=rowPtr[k+1]){
+                if (l>=rowPtr[kk+1]){
                     continue;
                 }
                 nnz_current_diag_tile += (colIdx[l]==j);
+                if (colIdx[l]==j){
+                    duplicate_sparse_mat[kk].insert(j); // key: row idx, value: set of col idx
+                    alpha_columns_per_sm[i/warps_per_sm].insert(j); // key: sm_idx, value: set of col idx
+                }
             }
 
             j++;
@@ -752,33 +760,21 @@ void Mat::csr2_DiagTiling(){
     // weights/non-zeros for each warp are stored in CSC
     vector<int> nnz_p_warp(partitions_node+1,0);
     int nnz_rowPtr = 0;
-    int col_accu_start = 0;
-    alpha_pillar_rowPtr.push_back(0);
     
+    alpha_pillar_rowPtr.push_back(0);
+    int row_start = 0;
+    int row_end = 0;
+    int col_start = 0;
+    int col_end = 0;
     for (int i=0; i<warps_with_weights; ++i){
-        
-        int col_start = col_accu_start;
-        int col_end = col_accu_start;
-        if (i>=wing_tiles) col_accu_start += tile_width[i-wing_tiles]; 
-
-        for (int j=wing_tiles; j>0; --j){
-            if (i-j>=0){
-                col_end += tile_width[i-j];
-            }    
-        }
-        int row_start = col_end; // the diagonal tile is square
-        
-        col_end += tile_width[i];
-        for (int j=1; j<=wing_tiles; ++j){
-            if (i+j<warps_with_weights){
-                col_end += tile_width[i+j];
-            }else{
-                break;
+        row_start = row_end;
+        row_end += tile_width[i];
+        if (i%warps_per_sm==0){
+            col_start = col_end;
+            for (int idx=0; idx<warps_per_sm && (i+idx)<warps_with_weights; ++idx){
+                col_end += tile_width[i+idx];
             }
         }
-        
-        int row_end = row_start + tile_width[i];
-        
         for (int j=row_start; j<row_end; ++j){
             // visit each col_panel
             int entries_in_row = 0;
@@ -793,12 +789,20 @@ void Mat::csr2_DiagTiling(){
                     break;
                 }
                 
-                //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
-                alpha_colIdx.push_back(l);
-                alpha_vals.push_back(vals[kk]);
-                entries_in_row++;
-                nnz_p_warp[i]++;
-                nnz_rowPtr++;
+                // duplicate_sparse_mat contains the diagonal tiles after the first round
+                // if col_idx l exists in the diagonal tile of the current row pillar, OR
+                // if col_idx l exists in the diagonal tiles residing on the same SM
+                if (duplicate_sparse_mat[j].find(l)!=duplicate_sparse_mat[j].end() 
+                    || alpha_columns_per_sm[i%warps_per_sm].find(l)!=alpha_columns_per_sm[i%warps_per_sm].end()){
+                    //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
+                    duplicate_sparse_mat[j].insert(l); // mark it as visited
+                    alpha_columns_per_sm[i%warps_per_sm].insert(l);
+                    alpha_colIdx.push_back(l);
+                    alpha_vals.push_back(vals[kk]);
+                    entries_in_row++;
+                    nnz_p_warp[i]++;
+                    nnz_rowPtr++;
+                }
             }
             if ( entries_in_row>=0 && entries_in_row<(rowPtr[j+1]-rowPtr[j]) ){
                 // if the #nz in a specific row of a seg 
@@ -836,63 +840,36 @@ void Mat::csr2_DiagTiling(){
     // It can be merged with the second round, but I just want to keep it simple
     // and easy to understand.
     // The last bucket is used for workload balance among SMs
-    int target_nnz_per_wp = (rowPtr[m]-alpha_colIdx.size())/2/(partitions_node-warps_with_weights);
-    col_accu_start = 0;
+    int target_nnz_per_wp = (rowPtr[m]-alpha_colIdx.size())/16/(partitions_node-warps_with_weights);
+    if (tuning) printf("target_nnz_per_wp = %d, rowPtr[m]-alpha_colIdx.size() = %zu, partitions_node-warps_with_weights = %d\n",
+            target_nnz_per_wp,rowPtr[m]-alpha_colIdx.size(),partitions_node-warps_with_weights);
     int pillars_in_total = warps_with_weights;
-    int id_row_pillar = 0;
-    vector<int> prefix_sum_tile_width(warps_with_weights+1,0);
-    for (int i=1; i<=warps_with_weights; ++i){
-        prefix_sum_tile_width[i] = prefix_sum_tile_width[i-1] + tile_width[i-1];
-    }
-    assert(prefix_sum_tile_width[warps_with_weights]==m);
-    int col_start = 0;
-    int col_end = tile_width[0];
+    
     int nnz_current_pillar = 0;
     vector<int> temp_alpha_rowPtr;
     vector<int> temp_segVoMap;
     int rows_in_current_pillar = 0;
+    int third_pillars = 0;
     for (int i=0; i<m; ++i){
-        rows_in_current_pillar++;
-        assert(id_row_pillar<=warps_with_weights);
-        if (i>=prefix_sum_tile_width[id_row_pillar]){
-            col_start = col_accu_start;
-            col_end = col_accu_start;
-            if (id_row_pillar>=wing_tiles) col_accu_start += tile_width[id_row_pillar-wing_tiles]; 
-            
-            for (int j=wing_tiles; j>0; --j){
-                if (id_row_pillar-j>=0){
-                    col_end += tile_width[id_row_pillar-j];
-                }    
-            }
-        
-            col_end += tile_width[id_row_pillar];
-            for (int j=1; j<=wing_tiles; ++j){
-                if (id_row_pillar+j<warps_with_weights){
-                    col_end += tile_width[id_row_pillar+j];
-                }else{
-                    break;
-                }
-            }
-            id_row_pillar++;  
-        }
+        rows_in_current_pillar++; 
         
         int entries_in_row = 0;
         temp_alpha_rowPtr.push_back(nnz_rowPtr);
         for (int kk=rowPtr[i]; kk<rowPtr[i+1]; ++kk){  // kk is the row idx
             int l=colIdx[kk];
-            if (l>=col_start && l<col_end){
-                continue;
+            
+            // if (i,l) hasn't been visited
+            if (duplicate_sparse_mat[i].find(l)==duplicate_sparse_mat[i].end()){
+                //printf("r = %d, c = %d, val[%d] = %f\n",i,l,kk,vals[kk]);
+                duplicate_sparse_mat[i].insert(l); // mark it as visited, but not necessary in the third round
+                assert(alpha_colIdx.size()==alpha_vals.size() && alpha_vals.size()==nnz_rowPtr);
+                alpha_colIdx.push_back(l);
+                alpha_vals.push_back(vals[kk]);
+                entries_in_row++;
+                
+                nnz_rowPtr++;
+                nnz_current_pillar++;
             }
-            
-            //printf("r = %d, c = %d, val[%d] = %f\n",i,l,kk,vals[kk]);
-            assert(alpha_colIdx.size()==alpha_vals.size() && alpha_vals.size()==nnz_rowPtr);
-            alpha_colIdx.push_back(l);
-            alpha_vals.push_back(vals[kk]);
-            entries_in_row++;
-            nnz_p_warp[id_row_pillar]++;
-            
-            nnz_rowPtr++;
-            nnz_current_pillar++;
         }
         
         if ( entries_in_row>=0 && entries_in_row<(rowPtr[i+1]-rowPtr[i]) ){
@@ -916,11 +893,12 @@ void Mat::csr2_DiagTiling(){
             }
             temp_segVoMap.clear();
             pillars_in_total++;
+            third_pillars++;
             alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + rows_in_current_pillar);
             rows_in_current_pillar = 0;
         }
     }
-   
+    if (tuning) printf("third pillars = %d\n",third_pillars);
     alpha_rowPtr.push_back(nnz_rowPtr);
     alpha_pillarIdx.push_back(pillars_in_total);
     
