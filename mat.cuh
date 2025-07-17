@@ -170,7 +170,7 @@ class Mat : public Mat_POD{
 
   int row_nnz_get(int r) const { return rowPtr[r+1] - rowPtr[r]; }
 
-	void csr2seg_Cmajor(int i);
+	int csr2seg_Cmajor(int i, unordered_map<int,unordered_set<int>> &duplicate_sparse_mat, int &nnz_rowPtr);
 	void csr2flex_Rmajor(int i);
 	void csr2flex_Cmajor(int i);
     void transfer();

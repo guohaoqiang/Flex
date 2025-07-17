@@ -843,64 +843,33 @@ void Mat::csr2_DiagTiling(){
     int target_nnz_per_wp = (rowPtr[m]-alpha_colIdx.size())/16/(partitions_node-warps_with_weights);
     if (tuning) printf("target_nnz_per_wp = %d, rowPtr[m]-alpha_colIdx.size() = %zu, partitions_node-warps_with_weights = %d\n",
             target_nnz_per_wp,rowPtr[m]-alpha_colIdx.size(),partitions_node-warps_with_weights);
-    int pillars_in_total = warps_with_weights;
+    int tiles_in_total = warps_with_weights;
     
     int nnz_current_pillar = 0;
     vector<int> temp_alpha_rowPtr;
     vector<int> temp_segVoMap;
     int rows_in_current_pillar = 0;
     int third_pillars = 0;
-    for (int i=0; i<m; ++i){
-        rows_in_current_pillar++; 
-        
-        int entries_in_row = 0;
-        temp_alpha_rowPtr.push_back(nnz_rowPtr);
-        for (int kk=rowPtr[i]; kk<rowPtr[i+1]; ++kk){  // kk is the row idx
-            int l=colIdx[kk];
-            
-            // if (i,l) hasn't been visited
-            if (duplicate_sparse_mat[i].find(l)==duplicate_sparse_mat[i].end()){
-                //printf("r = %d, c = %d, val[%d] = %f\n",i,l,kk,vals[kk]);
-                duplicate_sparse_mat[i].insert(l); // mark it as visited, but not necessary in the third round
-                assert(alpha_colIdx.size()==alpha_vals.size() && alpha_vals.size()==nnz_rowPtr);
-                alpha_colIdx.push_back(l);
-                alpha_vals.push_back(vals[kk]);
-                entries_in_row++;
-                
-                nnz_rowPtr++;
-                nnz_current_pillar++;
-            }
-        }
-        
-        if ( entries_in_row>=0 && entries_in_row<(rowPtr[i+1]-rowPtr[i]) ){
-            // if the #nz in a specific row of a seg 
-            // is less than that of the whole row,
-            // the row requires "atomic add".
-            // use MSB to mark it.
-            temp_segVoMap.push_back( voMp[i] | (1<<31) );
-        }else{ 
-            temp_segVoMap.push_back( voMp[i] );
-        }  
-        
-        
-        if (nnz_current_pillar>=(int)(0.8*target_nnz_per_wp) || i==m-1){
-            for (auto & rid: temp_alpha_rowPtr){
-                alpha_rowPtr.push_back(rid);
-            }
-            temp_alpha_rowPtr.clear();
-            for (auto & vm: temp_segVoMap){
-                segVoMap.push_back(vm);
-            }
-            temp_segVoMap.clear();
-            pillars_in_total++;
-            third_pillars++;
-            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + rows_in_current_pillar);
-            rows_in_current_pillar = 0;
-        }
-    }
-    if (tuning) printf("third pillars = %d\n",third_pillars);
+
+    int tileRows = (m+tm-1)/tm;
+    assert(segVoMap.size()==alpha_rowPtr.size()); 
     alpha_rowPtr.push_back(nnz_rowPtr);
-    alpha_pillarIdx.push_back(pillars_in_total);
+    //printf("%d of %s: tileRows = %d\n",__LINE__,__FILE__,tileRows);
+    //printf("%d of %s: nnz_rowPtr = %d, rowPtr[m] = %d\n",__LINE__,__FILE__,nnz_rowPtr,rowPtr[m]);
+    //printf("%d of %s: alpha_colIdx.size() = %zu, alpha_vals.size() = %zu\n",__LINE__,__FILE__,
+    //        alpha_colIdx.size(),alpha_vals.size());
+    
+    for (int i=0; i<tileRows; ++i){
+        //printf("%d of %s: tiles_in_total = %d\n",__LINE__,__FILE__,tiles_in_total);
+        tiles_in_total += csr2seg_Cmajor(i, duplicate_sparse_mat, nnz_rowPtr);
+        if (segVoMap.size()+1!=alpha_rowPtr.size()){
+            printf("%d of %s: i = %d\n",__LINE__,__FILE__,i);
+            assert(segVoMap.size()+1==alpha_rowPtr.size()); 
+        }
+    } 
+    
+    //alpha_rowPtr.push_back(nnz_rowPtr);
+    alpha_pillarIdx.push_back(tiles_in_total);
     
     n_segs = alpha_pillarIdx.back();
 
@@ -1053,7 +1022,7 @@ void Mat::csr2tile(){
 		//csr2flex_Cmajor(i);
 		//csr2regular(i);
         int temp = segPtr.size();
-        csr2seg_Cmajor(i);
+        //csr2seg_Cmajor(i);
         segs_per_row_panel[i] = segPtr.size()-temp;
 	} 
 
@@ -1163,7 +1132,7 @@ void Mat::print3(int l){
     printf("\n");
 }
 
-void Mat::csr2seg_Cmajor(int ridx){
+int Mat::csr2seg_Cmajor(int ridx, unordered_map<int,unordered_set<int>> &duplicate_sparse_mat, int &nnz_rowPtr){
 	// row tile upper bound and lower bound
 	int rowStart = ridx * tm;
 	int rowEnd = min(m, (ridx+1)*tm); // exclusive
@@ -1171,14 +1140,12 @@ void Mat::csr2seg_Cmajor(int ridx){
 	// keep track of the cols in each row
 	std::vector<int> cOffset(tm, 0);
 
-    // {col, val}, for kernel v31 
+    // {col, val}
     std::vector<std::vector<std::pair<int,float>>> segcv(tm, std::vector<std::pair<int,float>>()); 
 
-
     int dif = 0.1*nnz_limit; 
-    int nnzInSeg = 0;
-    int nnz_cur_panel = rowPtr[rowEnd] - rowPtr[rowStart];    
-
+    int nnzInSeg = 0;   
+    int tiles_in_current_panel = 0;
     // If n_nodes_z_out>0 some panels can be empty, which tiling can't handle.
     assert( !dl.dl_original->n_nodes_z_out );
     vector<int> atom(tm, 0);
@@ -1190,71 +1157,58 @@ void Mat::csr2seg_Cmajor(int ridx){
     // collect segs in the panel
     for ( auto [j,ncol]: occ_cols ) {
         
-        int segId = segPtr.size()-1;
-        for ( int i=rowStart; i<rowEnd; ++i ){
+        for ( int i=rowStart; i<rowEnd; ++i ){ 
             // absolute position of the nze in csr, idx = base + offset
             int c = rowPtr[i] + cOffset[i-rowStart];
+            if (duplicate_sparse_mat[i].find(colIdx[c])!=duplicate_sparse_mat[i].end()){ 
+                cOffset[i-rowStart]++;
+                continue;
+            }
             if ( colIdx[c]==j && c<rowPtr[i+1] ){
-                // nze values
-                segNzRowIdx.push_back(i-rowStart);
-                segNzColIdx.push_back(j);
+                duplicate_sparse_mat[i].insert(j); // mark it as visited, but not necessary in the third round
                 
-                segcv[i-rowStart].push_back({j,vals[c]}); // for v31 kernel
-
-                segNzRCIdx.push_back(i-rowStart); 
-                segNzRCIdx.push_back(j);
-                newVals[pos++] = vals[c];
+                segcv[i-rowStart].push_back({j,vals[c]}); 
                 cOffset[i-rowStart]++;
                 atom[i-rowStart]++;
                 nnzInSeg++;
 
-                if ( !cols_seg.count(segId) || cols_seg[segId].back()!=j ){
-                    cols_seg[segId].push_back(j);
-                }
             }
         }
+        //if (ridx==73) printf("j = %d, last_col = %d, nnzInSeg = %zu\n",j,last_col,nnzInSeg);
         if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
         
-            // for kernel v31
-            if ( !seg_rowPtr.empty() ) seg_rowPtr.push_back( seg_rowPtr.back() + 0 );
-            else seg_rowPtr.push_back( 0 );
-            
-            for ( int i=0; i<tm; ++i ){
-                seg_rowPtr.push_back( seg_rowPtr.back() + segcv[i].size() );
+            nnz_rowPtr += nnzInSeg;
+            for ( int i=0; i<rowEnd-rowStart; ++i ){
+                nnzInSeg -= segcv[i].size();
+                alpha_rowPtr.push_back( alpha_rowPtr.back() + segcv[i].size() );
+                // row-major in each tile
                 for ( auto &p:segcv[i] ){
-                    segNzCV.push_back((float)p.first); // col of the nz is stored in float
-                    segNzCV.push_back(p.second);
+                    alpha_colIdx.push_back(p.first); // col of weight
+                    alpha_vals.push_back(p.second);
                 }
                 segcv[i].clear();
             }
-
-
-            aux_seg.push({ ridx, segPtr.size()-1 }); // {seg_row, seg_idx}
-            id2r[segPtr.size()-1] = ridx;
-            count_segs[ridx]++;
-            segPtr.push_back(segPtr.back()+nnzInSeg);
-            nnzInSeg = 0;
+            assert(nnzInSeg == 0);
            
-            for (int i=rowStart; i<rowStart+tm; ++i){
-                if ( i<rowEnd ){
-                    if ( atom[i-rowStart]>=0 && atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
-                        // if the #nz in a specific row of a seg 
-                        // is less than that of the whole row,
-                        // the row requires "atomic add".
-                        // use MSB to mark it.
-                        segVoMap.push_back( voMp[i] | (1<<31) );
-                    }else{ 
-                        segVoMap.push_back( voMp[i] );
-                    }
-                }else{
-                    // for the last panel, the rows may be less than tm 
-                    segVoMap.push_back(1<<(bit_width((uint)m)+1));
+            for (int i=rowStart; i<rowEnd; ++i){
+                
+                if ( atom[i-rowStart]>=0 && atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
+                    // if the #nz in a specific row of a seg 
+                    // is less than that of the whole row,
+                    // the row requires "atomic add".
+                    // use MSB to mark it.
+                    segVoMap.push_back( voMp[i] | (1<<31) );
+                }else{ 
+                    segVoMap.push_back( voMp[i] );
                 }
                 
                 atom[ i-rowStart ] = 0;
             }
+            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + rowEnd - rowStart);
+            tiles_in_current_panel++;
         }
     }
+    return tiles_in_current_panel;
 }
 
 void

@@ -4016,7 +4016,8 @@ void alpha_w_atomic_spmm_v36(){
     uint32_t sm_id = smid_get();
     const int wp_id = threadIdx.x / 32; // threadIdx.x >> 5;
     const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
-    int c_col = lane_id; 
+    const int row_id = lane_id>>3; // 8 threads process a row
+    const int c_col = lane_id & 0x7; 
 
     __shared__ int pillar_idx[2]; // two warps per block
     
@@ -4050,26 +4051,45 @@ void alpha_w_atomic_spmm_v36(){
         int row_end = md.alpha_pillar_rowPtr_dev[work_pillar_idx+1];          // the first row of the next row pillar
         
         // visit all rows of the row pillar
-        for ( int r_idx = row_start; r_idx<row_end; r_idx += 1 ){
+        // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
+        // As such, the incremental is 4
+        for ( int r_idx = row_start+row_id; r_idx<row_end; r_idx += 4 ){
             // each thread fetch a gold row id
-            if ( (r_idx-row_start)%32 == 0 ){
-                if ( (r_idx + lane_id) < row_end){
-                    fetch_row_id = md.segVoMap_dev[r_idx + lane_id];
+            //                        iteration0        iteration1      iteration2         iteration3         ...      iteration8
+            // for subwarp 0, r_idx = row_start,        row_start + 4,  row_start + 8,     row_start + 12     ...      row_start + 32
+            // for subwarp 1, r_idx = row_start + 1,    row_start + 5,  row_start + 9,     row_start + 13     ...      row_start + 33
+            // for subwarp 2, r_idx = row_start + 2,    row_start + 6,  row_start + 10,    row_start + 14     ...      row_start + 34
+            // for subwarp 3, r_idx = row_start + 3,    row_start + 7,  row_start + 11,    row_start + 15     ...      row_start + 35
+            if ( (r_idx-row_start)%32 == row_id ){
+                // a subwarp performs the fecth once every 8 iterations
+                //                   iteration0         iteration1      iteration2         iteration8
+                // subwarp 0       0,4,8,12,...,28                                         32,36,40,...
+                // subwarp 1       1,5,9,13,...,29                                         33,37,41,...   
+                // subwarp 2       2,6,10,14,...,30                                        34,38,42,... 
+                // subwarp 3       3,7,11,15,...,31                                        35,39,43,...
+                if ( (r_idx + c_col*4) < row_end){
+                    fetch_row_id = md.segVoMap_dev[r_idx + c_col*4];
                 }  
             }
-            
+            __syncwarp();
             int cur_rowPtr = md.alpha_rowPtr_dev[ r_idx ];    
             int nnz_cur_row = md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr;
             
-            // // broadcast the current gold row id within a warp
-            __syncwarp(); // is it necessary?  
-            int gold_row_id = __shfl_sync(0xffffffff, fetch_row_id, (r_idx-row_start)%32);
-            
+            // broadcast within a subwarp, each subwarp has 8 threads                    
+            // it0, 0 broadcast v to 0,1,...7   ,  8 broadcast v to 8,9,..15   ,   16 broadcast v to 16,17,..23   ,  24 broadcast v to 24,25,..31 
+            // it1, 1 broadcast v to 0,1,...7   ,  9 broadcast v to 8,9,..15   ,   17 broadcast v to 16,17,..23   ,  25 broadcast v to 24,25,..31
+            // it2, 2 broadcast v to 0,1,...7   ,  10 broadcast v to 8,9,..15   ,   18 broadcast v to 16,17,..23   ,  26 broadcast v to 24,25,..31
+            // it3, 3 broadcast v to 0,1,...7   ,  11 broadcast v to 8,9,..15   ,   19 broadcast v to 16,17,..23   ,  27 broadcast v to 24,25,..31
+            unsigned mask = __activemask(); //__ballot_sync(0xffffffff, 1);
+            __syncwarp();
+            int gold_row_id = __shfl_sync(mask, fetch_row_id, (r_idx-row_start)/4%8, 8);
+            __syncwarp();
             int actual_row = gold_row_id & 0x7fffffff;
             int atomicORnot = gold_row_id & (1<<31); // get MSB
             int addr = actual_row*md.k;
             
-            for ( int cc = c_col; cc<md.k; cc+=32 ){ 
+            // 8 threads process a C row
+            for ( int cc = c_col; cc<md.k; cc+=8 ){ 
                 float res = 0;
                 for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
                     
@@ -5111,8 +5131,8 @@ void run(DataLoader& input_vo){
 
             table.entry("Ord", "%3s", input.vertex_order_abbr);
             fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
-            //   table.entry("tm", "%3d", spMats[id].tm);
-            //   fprintf(tile_nperf,"%3d,", spMats[id].tm);
+            table.entry("tm", "%3d", spMats[id].tm);
+            fprintf(tile_nperf,"%3d,", spMats[id].tm);
 
               // The maximum number of active blocks per SM for this
               // kernel when launched with a block size of thd_per_block.
