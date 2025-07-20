@@ -12,6 +12,7 @@ Mat::Mat(DataLoader& input, int tileh,int tilew)
             nnz = input.nnz;
 			tm = tileh;
             tn = tilew;
+            uni_nb = input.uni_nb;
 			tileRowPtr.push_back(0);
 			segPtr.push_back(0);
 			tileNnz.push_back(0);
@@ -105,6 +106,7 @@ void Mat::dataVolume_est2(){
 /*********** compute B rows to be loaded for each sm **************************/
     int64_t validate_nnz = 0; 
     vector<unordered_set<int>> col_st(sms+1, unordered_set<int>());  
+    unordered_map<int,int> c_sm;
     // the first SM buckets 
     for (int i=0; i<sms; ++i){
         
@@ -114,6 +116,10 @@ void Mat::dataVolume_est2(){
                 validate_nnz++;
                 col_st[i].insert( (int)segNzCV[j*2] );
             }
+        }
+        // collect long row break and draw the pie
+        for ( auto &cc: col_st[i] ){
+            c_sm[cc]++;
         }
     }
     
@@ -130,26 +136,69 @@ void Mat::dataVolume_est2(){
         }
 
        acc_col += last_tile_col.size();
+        for ( auto &cc: col_st[sms] ){
+            c_sm[cc]++;
+        }
     }
-    
+
+    if (false){
+        bool draw_pie = true;
+        int pie[6] = { 0 };
+        const char* pie_sm = "c_sm.csv";
+        FILE *pie_c_sm = fopen(pie_sm,"aw");
+        if (draw_pie){
+            for ( auto &p:c_sm ){
+                if ( p.second==1 ){
+                    pie[0]++;
+                }else if ( p.second==2 ){
+                    pie[1]++;
+                }else if ( p.second==3 ){
+                    pie[2]++;
+                }else if ( p.second>3 && p.second<=5 ){
+                    pie[3]++;
+                }else if ( p.second>5 && p.second<=10 ){
+                    pie[4]++;
+                }else{
+                    pie[5]++;
+                }
+            }
+        }
+        fprintf(pie_c_sm, "%ld,",uni_nb);
+        for (int ii=0; ii<6; ++ii){
+            if (ii<5) fprintf(pie_c_sm, "%d,",pie[ii]);
+            else fprintf(pie_c_sm, "%d\n",pie[ii]);
+        }
+        fclose(pie_c_sm);
+    }
+
+    bool collect_b_loads = false;
+    bool collect_ops = true;
+    bool collect_tile_alloc = false;
     const char* l1cache = "l1cache.csv";
+    if (collect_b_loads){
+        l1cache = "b_loads_per_sm.csv";
+    }
+    if (collect_ops){
+        l1cache = "ops_per_sm.csv";
+    }
+    if (collect_tile_alloc){
+        l1cache = "tiles_per_sm.csv";
+    }
     FILE *l1_est = fopen(l1cache,"aw");
-    //fprintf(l1_est,"%s,",dl.graph_name.c_str());
-    //fprintf(l1_est,"%s,",dl.vertex_order_abbr.c_str());
-    //fprintf(l1_est,"%d\n",tm);
+    fprintf(l1_est,"%s,",dl.graph_name.c_str());
+    fprintf(l1_est,"%s,",dl.vertex_order_abbr.c_str());
+    fprintf(l1_est,"%d\n",tm);
     if (validate_nnz!=nnz){
-        printf("%d of %s, val = %d, nnz = %d\n",__LINE__,__FILE__,validate_nnz,nnz);
+        printf("%d of %s, val = %d, nnz = %d\n",__LINE__,__FILE__,(int)validate_nnz,(int)nnz);
     }
     assert(validate_nnz==nnz);
-    bool b_l1cache = false;
-    bool a_l1cache = false;
+    int validate_segs = n_segs;
     for (int j=0; j<sms; ++j){
         acc_col += col_st[j].size();
-        if (b_l1cache){
-            if(j<sms-1) fprintf(l1_est,"%d,", col_st[j].size());
-            else fprintf(l1_est,"%d\n", col_st[j].size());
+        if (collect_b_loads){
+            fprintf(l1_est,"%d,", (int)col_st[j].size());
         }
-        if (a_l1cache){
+        if (collect_ops){
             int nnz_in_sm = 0;
             if ( next_seg[ j ]<grouped_tailSeg[ j ] ){
                 nnz_in_sm = seg_rowPtr[grouped_tailSeg[j]*(tm+1)-1] - seg_rowPtr[next_seg[j]*(tm+1)];
@@ -158,14 +207,26 @@ void Mat::dataVolume_est2(){
             }
             fprintf(l1_est,"%d,", nnz_in_sm);
         }
+        if (collect_tile_alloc){
+            fprintf(l1_est,"%d,", grouped_tailSeg[j]-next_seg[j]);
+            validate_segs -= (grouped_tailSeg[j]-next_seg[j]);
+        }
     }
-    if(a_l1cache){
+    if (collect_b_loads){
+        fprintf(l1_est,"%d\n", (int)col_st[ sms ].size());
+    }
+    if(collect_ops){
         if ( next_seg[ sms ]<grouped_tailSeg[ sms ] ){
             fprintf(l1_est,"%d\n", seg_rowPtr[grouped_tailSeg[sms]*(tm+1)-1]-
                                                 seg_rowPtr[next_seg[sms]*(tm+1)] );
         }else{
             fprintf(l1_est,"%d\n", 0);
         }
+    }
+    if (collect_tile_alloc){
+        fprintf(l1_est,"%d\n", grouped_tailSeg[ sms ]-next_seg[ sms ]);
+        validate_segs -= (grouped_tailSeg[ sms ]-next_seg[ sms ]);
+        assert( validate_segs==0 );
     }
 /******************************************************************************/
 
@@ -203,6 +264,34 @@ void Mat::dataVolume_est2(){
     if (false)  printf("%d of %s, n_col_sum = %ld, acc_col = %ld\n",__LINE__,__FILE__,n_col_sum,acc_col);
     
     est_st_bytes = dl.gpuC_bytes;
+}
+void Mat::alpha_transfer(){
+#   define CMALC(var)                                   \
+     var##_bytes = var.size() * sizeof( var[0] );        \
+     CHECK_CUDA(cudaMalloc( &var##_dev, var##_bytes )) ;
+
+     CMALC( alpha_rowPtr ); CMALC( alpha_colIdx ); CMALC( alpha_vals ); 
+     CMALC( alpha_pillar_rowPtr ); CMALC( alpha_pillarIdx ); CMALC( segVoMap ); 
+     CMALC( voMp ); 
+#   undef CMALC
+
+    // transfer data to device
+    cudaMemcpy(alpha_rowPtr_dev, alpha_rowPtr.data(), alpha_rowPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(alpha_colIdx_dev, alpha_colIdx.data(), alpha_colIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(alpha_pillar_rowPtr_dev, alpha_pillar_rowPtr.data(), alpha_pillar_rowPtr.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(alpha_vals_dev, alpha_vals.data(), alpha_vals.size()*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(alpha_pillarIdx_dev, alpha_pillarIdx.data(), alpha_pillarIdx.size()*sizeof(int), cudaMemcpyHostToDevice);
+    
+    cudaMemcpy(segVoMap_dev, segVoMap.data(), segVoMap.size()*sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(voMp_dev, voMp.data(), voMp.size()*sizeof(int), cudaMemcpyHostToDevice);
+    if (dl.vertex_order_abbr != "OVO"){
+        CHECK_CUDA(cudaMalloc( &shadow_b_dev,  m*k*sizeof(float))) ;
+        CHECK_CUDA(cudaMemset( shadow_b_dev,  0, m*k*sizeof(float))) ;
+    }
+    CHECK_CUDA(cudaMalloc( &counter_dev,  (sms+1)*sizeof(int))) ;
+    CHECK_CUDA(cudaMemset( counter_dev,  0, (sms+1)*sizeof(int))) ;
+}
+void Mat::alpha_dataVolume_est(){
 }
 void Mat::dataVolume_est(){
     est_fp = int64_t(nnz)*k;
@@ -274,9 +363,9 @@ int Mat::checkSim(vector<int>& a, vector<int>& b){
     }
     return sim;
 }
-void Mat::sortSegs(){
+void Mat::dfsSegs(){
 
-    vector<int> insular;
+    unordered_set<int> insular;
     // construct graph
     // { idx, col overlaps } min heap, sort by col overlaps
     // enable the max col overlap be on the top of the stack when DFS
@@ -294,8 +383,11 @@ void Mat::sortSegs(){
         for ( auto col_i: cols_seg[i] )
           for ( auto seg_j: col_to_seg[col_i] )
             {
+              // 
               if ( seg_j <= i ) continue;
-              if ( id2r[i] == id2r[seg_j] ) continue;
+              // pruning, two segs cannot be on the same row panel
+              if ( id2r[i] == id2r[seg_j] ) continue; 
+              // pruning, check if the seg_j-th seg has been paired
               if ( mark[seg_j] == i ) continue;
               mark[seg_j] = i;
               int sim = checkSim(cols_seg[i],cols_seg[seg_j]);
@@ -305,13 +397,13 @@ void Mat::sortSegs(){
               }
             }
         if ( g[i].empty() ) {
-          insular.push_back(i);
+          insular.insert(i);
           g[i].push( {i,0} );
         }
       }
 
-    if ( false && insular.size()>0 ){
-        printf("insular segs = %d\n",(int)insular.size());
+    if ( insular.size()>0 ){
+        printf("insular segs = %lu\n",insular.size());
         //assert( insular.size()==0 );
     }
 	std::vector<unsigned int> segPtr1(1,0);
@@ -328,48 +420,54 @@ void Mat::sortSegs(){
     // explore L1 reuse
     vector<bool> visited(n_segs,false);
     stack<int> st;
-    st.push(0);
-    while ( !st.empty() ){
-        
-        int node = st.top();
-        st.pop();
-        if (visited[node])  continue;
-        visited[node] = true;
-
-        int seg_nnz = segPtr[node+1] - segPtr[node];
-        for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
-            segNzRCIdx1.push_back(segNzRCIdx[2*i]);
-            segNzRowIdx1.push_back(segNzRCIdx[2*i]);
-            segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
-            segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+    unsigned val_seg = 0;
+    unsigned val_w = 0;
+    for (int src=0; src<n_segs; ++src){
+        if (visited[src] || insular.find(src)!=insular.end())   continue;
+        st.push(src);
+        while ( !st.empty() ){
             
-            newVals1.push_back(newVals[i]);
-            
-            segNzCV1.push_back(segNzCV[2*i]);
-            segNzCV1.push_back(segNzCV[2*i+1]);
-    
-        }        
-        segPtr1.push_back(segPtr1.back()+seg_nnz);
-        for (int i=0; i<tm; ++i){
-            segVoMap1.push_back(segVoMap[node*tm+i]);
-        }
-        
-        if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
-        else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
-        for (int i=0; i<tm; ++i){
-            seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
-        }
-        
-        while ( !g[node].empty() ){
+            int node = st.top();
+            st.pop();
+            if (visited[node])  continue;
+            visited[node] = true;
+            val_seg++;
 
-            auto nb = g[node].top();
-            g[node].pop();
-            if ( !visited[nb.first] ){
-                st.push(nb.first);
+            int seg_nnz = segPtr[node+1] - segPtr[node];
+            val_w += seg_nnz;
+            for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
+                segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+                segNzRowIdx1.push_back(segNzRCIdx[2*i]);
+                segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+                segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+                
+                newVals1.push_back(newVals[i]);
+                
+                segNzCV1.push_back(segNzCV[2*i]);
+                segNzCV1.push_back(segNzCV[2*i+1]);
+        
+            }        
+            segPtr1.push_back(segPtr1.back()+seg_nnz);
+            for (int i=0; i<tm; ++i){
+                segVoMap1.push_back(segVoMap[node*tm+i]);
             }
-        }            
-    }
+            
+            if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
+            else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
+            for (int i=0; i<tm; ++i){
+                seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
+            }
+            
+            while ( !g[node].empty() ){
 
+                auto nb = g[node].top();
+                g[node].pop();
+                if ( !visited[nb.first] ){
+                    st.push(nb.first);
+                }
+            }            
+        }
+    }
     for (int node:insular){
     
         int seg_nnz = segPtr[node+1] - segPtr[node];
@@ -414,6 +512,558 @@ void Mat::sortSegs(){
     swap(segNzCV, segNzCV1);
     swap(seg_rowPtr, seg_rowPtr1);
 }
+int Mat::checkSim2(map<int,int>& a, vector<int>& b){
+    // check the number of colnum overlap (non-zeros)
+    // to improve (temporal) locality of dense input in L1 
+    int sim = 0;
+    int j = 0;
+    while ( j<b.size() ){
+        if ( a.find(b[j++])!=a.end() ){
+            sim++;
+        }
+    }
+    return sim;
+}
+void Mat::sliWinSegs(){
+
+    vector<int> insular;
+
+    vector< vector<int> > col_to_seg(n);
+    for (int i=0; i<n_segs; i++ )
+      for ( auto c: cols_seg[i] ) col_to_seg[c].push_back(i);
+
+
+	std::vector<unsigned int> segPtr1(1,0);
+	std::vector<unsigned int> segNzRCIdx1;
+	std::vector<unsigned int> segNzRowIdx1;
+	std::vector<unsigned int> segNzRowIdx_2bit1;
+	std::vector<unsigned int> segNzColIdx1;
+	std::vector<float> newVals1;
+	std::vector<unsigned int> segVoMap1;
+
+	std::vector<float> segNzCV1;
+	std::vector<int> seg_rowPtr1;
+    // DFS reorder segs
+    // explore L1 reuse
+    vector<bool> visited(n_segs,false);
+    
+    vector<int> sh_seg_id(n_segs);
+    std::iota(sh_seg_id.begin(),sh_seg_id.end(),0);
+    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+    std::default_random_engine eee(seed);
+    std::shuffle(sh_seg_id.begin(), sh_seg_id.end(), eee);
+
+    vector<int> seg_ord;
+    int window = 64; // expected active_warps 
+    for (int src:sh_seg_id){
+        if ( visited[src] )   continue;
+        visited[src] = true;
+       
+        // {col_idx, freq}, like a sliding window to kepp track of the latest #window segs 
+        map<int,int> col_in_cache;
+        std::transform( std::begin(cols_seg[src]),std::end(cols_seg[src]),
+                std::inserter(col_in_cache, col_in_cache.end()),
+                [](int colID) {return std::make_pair(colID,1);} ); 
+        vector<int> tree_seg_ord;
+        // while loop for current graph component traversal
+        int val_seg = 0;
+        while (true)
+        { 
+            val_seg++;
+            assert(val_seg<=n_segs); // just to detect infinite loop
+
+            int candidate_seg = src;
+
+            // at least 1 col overlap between two tiles
+            int mx_sim = 1;
+            // explore the tile having maximum col overlaps 
+            // with previous #window tiles
+            for ( auto col_i: col_in_cache )
+              for ( auto seg_j: col_to_seg[col_i.first] ) // all segs having col_i.first
+                {
+                  if ( visited[seg_j] )   continue;
+                  int sim = checkSim2(col_in_cache,cols_seg[seg_j]);
+                  if ( sim>mx_sim ){
+                      mx_sim = sim;
+                      candidate_seg = seg_j;
+                  }
+                }
+            // no matter it is insular or new seg
+            visited[candidate_seg] = true;
+            // check if we find a potential to grow the tree 
+            if(candidate_seg!=src){
+                // found one potential
+                // update col_in_cache
+                // works like a sliding window
+                if (tree_seg_ord.size()>=window){
+                    int to_be_evict = *(tree_seg_ord.rbegin()+window-1);
+                    for ( auto col_ii: cols_seg[to_be_evict] ){
+                        if (--col_in_cache[col_ii]==0){
+                           col_in_cache.erase(col_ii); 
+                        }
+                    }
+                }
+                for ( auto col_ii: cols_seg[candidate_seg] ){
+                    col_in_cache[col_ii]++; 
+                }
+
+                // push the candidate into seg_ord
+                if (tree_seg_ord.size()==0) tree_seg_ord.push_back(src);
+                tree_seg_ord.push_back(candidate_seg); 
+            }else{
+                // leaf OR insular
+                if (tree_seg_ord.size()==0){
+                    // insular
+                    insular.push_back(src);
+                }
+                break;
+            }
+        }
+        // merge the current tree into our forest
+        seg_ord.insert(seg_ord.end(),tree_seg_ord.begin(),tree_seg_ord.end()); 
+
+    }
+    if (false)
+    {
+        printf("%d of %s : #segs = %d\n",__LINE__,__FILE__,n_segs);
+        printf("%d of %s : #seg_ord = %lu, #insular = %lu\n",__LINE__,__FILE__,
+                seg_ord.size(),insular.size());
+    }
+    // merge the current tree into our forest
+    seg_ord.insert(seg_ord.end(),insular.begin(),insular.end()); 
+    assert(seg_ord.size()==n_segs);
+    for (int node:seg_ord){
+    
+        int seg_nnz = segPtr[node+1] - segPtr[node];
+        for (int i=segPtr[node]; i<segPtr[node+1]; ++i){
+            segNzRCIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRowIdx1.push_back(segNzRCIdx[2*i]);
+            segNzRCIdx1.push_back(segNzRCIdx[2*i+1]);
+            segNzColIdx1.push_back(segNzRCIdx[2*i+1]);
+            
+            newVals1.push_back(newVals[i]); 
+            
+            segNzCV1.push_back(segNzCV[2*i]);
+            segNzCV1.push_back(segNzCV[2*i+1]);
+        } 
+        segPtr1.push_back(segPtr1.back()+seg_nnz);
+        for (int i=0; i<tm; ++i){
+            segVoMap1.push_back(segVoMap[node*tm+i]);
+        }
+       
+        if ( seg_rowPtr1.empty() )  seg_rowPtr1.push_back(0);
+        else    seg_rowPtr1.push_back( seg_rowPtr1.back() );
+        for (int i=0; i<tm; ++i){
+            seg_rowPtr1.push_back( seg_rowPtr1.back() + (seg_rowPtr[node*(tm+1)+i+1] - seg_rowPtr[node*(tm+1)+i]) );
+        }
+    }
+
+	assert( segPtr.size()==segPtr1.size() );
+	assert( segNzRCIdx.size()==segNzRCIdx1.size() );
+	assert( segNzRowIdx.size()==segNzRowIdx1.size() );
+	assert( segNzColIdx.size()==segNzColIdx1.size() );
+	assert( newVals.size()==newVals1.size() );
+	assert( segVoMap.size()==segVoMap1.size() );
+    assert( segNzCV.size()==segNzCV1.size() );
+    assert( seg_rowPtr.size()==seg_rowPtr1.size() );
+      
+	swap(segPtr, segPtr1);
+	swap(segNzRCIdx, segNzRCIdx1);
+	swap(segNzRowIdx, segNzRowIdx1);
+	swap(segNzColIdx, segNzColIdx1);
+	swap(newVals, newVals1);
+	swap(segVoMap, segVoMap1);
+    swap(segNzCV, segNzCV1);
+    swap(seg_rowPtr, seg_rowPtr1);
+}
+
+void Mat::csr2_DiagTiling(){
+    int device_id;
+    cudaDeviceProp prop;
+    cudaGetDevice( &device_id );
+    cudaGetDeviceProperties( &prop, device_id );
+    int n_sm = prop.multiProcessorCount;
+    sms = n_sm;
+    //int n_sm = 2;
+    const int warps_per_sm = 64; // 32 blocks per SM
+    
+    float alpha = 0.3;
+    /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
+
+    // I assume 30 percent of nz/weights will be covered in diagonal tiles
+    const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
+    bool tuning = false;
+    const int partitions_node = warps_per_sm * n_sm; // partitions along the width
+    const int nnz_p_diagonal_tile  = max(32,nnz_diagonal_tiles / partitions_node); 
+    if (tuning) printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
+    vector<int> tile_width(partitions_node,0);
+
+    // In the first round, we conly construct the diagonal tiles,
+    // whcih act as the central tiles for each SM. The diagonal tiles
+    // are constructed by exploring the row panel and col panel
+    //
+    // Each SM will have at least one tile
+    int mat_r_start = 0;
+    int warps_with_weights = 0;
+    vector<unordered_set<int>> alpha_columns_per_sm(n_sm, unordered_set<int>());
+    unordered_map<int,unordered_set<int>> duplicate_sparse_mat;
+    for (int i=0; i<partitions_node; ++i){
+        mat_r_start += i? tile_width[i-1] : 0;
+        // not necessary to let all SMs have non-zeros/weights. e.g. assert(mat_r_start<m-1); 
+        // These SMs can process the last bucket directly
+        int nnz_current_diag_tile = 0;
+        int j = mat_r_start;
+        while (j<m && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
+            // explore row_panel
+            for (int kk=rowPtr[j]; colIdx[kk]<=j; ++kk){
+                if (colIdx[kk]>=mat_r_start){
+                    nnz_current_diag_tile++;
+                    alpha_columns_per_sm[i/warps_per_sm].insert(colIdx[kk]); //key: sm_idx, value: set of col idx
+                    duplicate_sparse_mat[j].insert(colIdx[kk]);  // key: row idx, value: set of col idx
+                }
+                if (colIdx[kk]==j){
+                    break;
+                }
+            }
+            // explore col_panel
+            for (int kk=mat_r_start; kk<j; ++kk){  // kk is the row idx
+                int l=rowPtr[kk]; 
+                while (l < rowPtr[kk+1] && colIdx[l]<j){
+                    l++;
+                }
+                // DMK: Should code check for l < rowPtr[k+1] ?
+                // Haoqiang: Yes, it should, but I haven't ran into errors related to it. 
+                if (l>=rowPtr[kk+1]){
+                    continue;
+                }
+                nnz_current_diag_tile += (colIdx[l]==j);
+                if (colIdx[l]==j){
+                    duplicate_sparse_mat[kk].insert(j); // key: row idx, value: set of col idx
+                    alpha_columns_per_sm[i/warps_per_sm].insert(j); // key: sm_idx, value: set of col idx
+                }
+            }
+
+            j++;
+            
+        }
+        warps_with_weights += (nnz_current_diag_tile>0);
+        assert( j >= m || nnz_current_diag_tile );
+
+        tile_width[i] = j - mat_r_start;
+        //printf("tile_width[%d] = %d, nnz_current_diag_tile = %d\n",i,tile_width[i],nnz_current_diag_tile);
+    }
+    int verify_m = accumulate(tile_width.begin(), tile_width.end(), 0);
+    if (verify_m<m && tile_width.back()>0){
+        printf("alpha is too small ...  verify_m = %d, m = %d\n",verify_m,m);
+    }
+    assert(verify_m==m);
+    // In the second round, we extend twenty more tiles for each diagonal tile.
+    // ten above the diagonal and ten below the diagonal
+    // weights/non-zeros for each warp are stored in CSC
+    vector<int> nnz_p_warp(partitions_node+1,0);
+    int nnz_rowPtr = 0;
+    
+    alpha_pillar_rowPtr.push_back(0);
+    int row_start = 0;
+    int row_end = 0;
+    int col_start = 0;
+    int col_end = 0;
+    for (int i=0; i<warps_with_weights; ++i){
+        row_start = row_end;
+        row_end += tile_width[i];
+        if (i%warps_per_sm==0){
+            col_start = col_end;
+            for (int idx=0; idx<warps_per_sm && (i+idx)<warps_with_weights; ++idx){
+                col_end += tile_width[i+idx];
+            }
+        }
+        for (int j=row_start; j<row_end; ++j){
+            // visit each col_panel
+            int entries_in_row = 0;
+            alpha_rowPtr.push_back(nnz_rowPtr);
+            
+            for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){  
+                int l=colIdx[kk];
+                if (l<col_start){
+                    continue;
+                }
+                if (l>=col_end){
+                    break;
+                }
+                
+                // duplicate_sparse_mat contains the diagonal tiles after the first round
+                // if col_idx l exists in the diagonal tile of the current row pillar, OR
+                // if col_idx l exists in the diagonal tiles residing on the same SM
+
+                if ( duplicate_sparse_mat[j].contains(l)
+                    || alpha_columns_per_sm[i/warps_per_sm].contains(l) )
+                  {
+                    //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
+
+                    duplicate_sparse_mat[j].insert(l); // mark it as visited
+
+                    assert( alpha_columns_per_sm[i/warps_per_sm].contains(l) );
+                    // DMK: Is the commented out line below needed?
+                    //  alpha_columns_per_sm[i/warps_per_sm].insert(l);
+
+                    alpha_colIdx.push_back(l);
+                    alpha_vals.push_back(vals[kk]);
+                    entries_in_row++;
+                    nnz_p_warp[i]++;
+                    nnz_rowPtr++;
+                }
+            }
+            if ( entries_in_row>=0 && entries_in_row<(rowPtr[j+1]-rowPtr[j]) ){
+                // if the #nz in a specific row of a seg 
+                // is less than that of the whole row,
+                // the row requires "atomic add".
+                // use MSB to mark it.
+                segVoMap.push_back( voMp[j] | (1<<31) );
+            }else{ 
+                segVoMap.push_back( voMp[j] );
+            }
+        }
+        assert( nnz_p_warp[i] );
+        if (nnz_p_warp[i]){
+            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + tile_width[i]);
+        } 
+        if (i%warps_per_sm==0){
+            alpha_pillarIdx.push_back(i);
+        }
+        //printf("nnz_p_warp[%d] = %d\n",i,nnz_p_warp[i]);
+    }
+    while ( alpha_pillarIdx.size()<=n_sm ) alpha_pillarIdx.push_back(warps_with_weights);
+
+    assert(nnz_rowPtr<=rowPtr[m]);
+    // if there is an SM has no non-zero/weight,the following assert will fail
+    if (alpha_rowPtr.size()!=m){
+        printf("alpha_rowPtr.size() = %zu\n",alpha_rowPtr.size());
+        printf("(m+warps_with_weights) = %d\n",(m+warps_with_weights));
+    }
+    assert(alpha_rowPtr.size()==m);
+
+    empty_wp_p = (1- (float)warps_with_weights/partitions_node)*100;
+    band_nz_p = (float)alpha_colIdx.size()/rowPtr[m]*100;      // non-zero percentage of non-balance workloads. can be tuned by adjusting wing_tiles.
+
+    // In the third round, we fill in the last bucket with the remaining weights/non-zeros.
+    // It can be merged with the second round, but I just want to keep it simple
+    // and easy to understand.
+    // The last bucket is used for workload balance among SMs
+    int target_nnz_per_wp = (rowPtr[m]-alpha_colIdx.size())/16/(partitions_node-warps_with_weights);
+    if (tuning) printf("target_nnz_per_wp = %d, rowPtr[m]-alpha_colIdx.size() = %zu, partitions_node-warps_with_weights = %d\n",
+            target_nnz_per_wp,rowPtr[m]-alpha_colIdx.size(),partitions_node-warps_with_weights);
+    int tiles_in_total = warps_with_weights;
+    
+    int nnz_current_pillar = 0;
+    vector<int> temp_alpha_rowPtr;
+    vector<int> temp_segVoMap;
+    int rows_in_current_pillar = 0;
+    int third_pillars = 0;
+
+    int tileRows = (m+tm-1)/tm;
+    assert(segVoMap.size()==alpha_rowPtr.size()); 
+    alpha_rowPtr.push_back(nnz_rowPtr);
+    //printf("%d of %s: tileRows = %d\n",__LINE__,__FILE__,tileRows);
+    //printf("%d of %s: nnz_rowPtr = %d, rowPtr[m] = %d\n",__LINE__,__FILE__,nnz_rowPtr,rowPtr[m]);
+    //printf("%d of %s: alpha_colIdx.size() = %zu, alpha_vals.size() = %zu\n",__LINE__,__FILE__,
+    //        alpha_colIdx.size(),alpha_vals.size());
+    
+    for (int i=0; i<tileRows; ++i){
+        //printf("%d of %s: tiles_in_total = %d\n",__LINE__,__FILE__,tiles_in_total);
+        tiles_in_total += csr2seg_Cmajor(i, duplicate_sparse_mat, nnz_rowPtr);
+        if (segVoMap.size()+1!=alpha_rowPtr.size()){
+            printf("%d of %s: i = %d\n",__LINE__,__FILE__,i);
+            assert(segVoMap.size()+1==alpha_rowPtr.size()); 
+        }
+    } 
+    
+    //alpha_rowPtr.push_back(nnz_rowPtr);
+    alpha_pillarIdx.push_back(tiles_in_total);
+    
+    n_segs = alpha_pillarIdx.back();
+
+    if ( alpha_colIdx.size()!=alpha_vals.size() ||
+         alpha_vals.size()!=nnz_rowPtr ||
+         nnz_rowPtr!=rowPtr[m] ||
+         alpha_pillarIdx.size()!=n_sm+2 ||
+         segVoMap.size()+1!=alpha_rowPtr.size()){
+        printf("alpha_colIdx.size() = %zu, alpha_vals.size() = %zu, nnz_rowPtr = %d\n",
+                alpha_colIdx.size(),alpha_vals.size(),nnz_rowPtr);
+        printf("alpha_pillarIdx.size() = %zu, expect = %d\n",alpha_pillarIdx.size(),n_sm+2);
+        printf("segVoMap.size()+1 = %zu, alpha_rowPtr.size() = %zu\n",segVoMap.size()+1,alpha_rowPtr.size());
+    }
+    assert(alpha_colIdx.size()==alpha_vals.size());
+    assert(alpha_vals.size()==nnz_rowPtr);
+    assert(nnz_rowPtr==rowPtr[m]);
+    // first #SM entries mark the start pillar index for each SM queue.
+    // The penultimate marks the start pillar for workload balance. 
+    // The last marks the next of the end.(#row pillars in total)
+    assert(alpha_pillarIdx.size()==n_sm+2); 
+    assert(segVoMap.size()+1==alpha_rowPtr.size()); 
+
+
+    // DMK: Check that matrices match.
+
+    using val_t = remove_cvref_t<decltype(vals[0])>;
+    vector< unordered_map<int,pair<int,val_t>> > row_to_cols(m);
+    for ( int r=0; r<m; r++ )
+      for ( int i: views::iota(rowPtr[r],rowPtr[r+1]) )
+        row_to_cols[r][colIdx[i]] = { 0, vals[i] };
+
+    vector<int> voMpInv(m);
+    for ( int r=0; r<m; r++ ) voMpInv[voMp[r]] = r;
+
+    int nnz_check = 0;
+    const uint ro_mask = uint(-1) >> 1;
+    for ( int rr=0; rr<alpha_rowPtr.size()-1; rr++ )
+      {
+        const int r = voMpInv[segVoMap[rr]&ro_mask];
+        for ( int i = alpha_rowPtr[rr]; i < alpha_rowPtr[rr+1]; i++ )
+          {
+            const int c = alpha_colIdx[i];
+            assert( row_to_cols[r].contains(c) );
+            auto& [ n_seen, val ] = row_to_cols[r][c];
+            assert( n_seen++ == 0 );
+            assert( alpha_vals[i] == val );
+            nnz_check++;
+          }
+      }
+    assert( nnz_check == nnz );
+
+    int rr_i = 0;
+    for ( int s=0; s<=n_sm; s++ )
+      for ( int d = alpha_pillarIdx[s]; d < alpha_pillarIdx[s+1]; d++ )
+        {
+          assert( alpha_pillar_rowPtr[d] == rr_i );
+          rr_i = alpha_pillar_rowPtr[d+1];
+        }
+    assert( rr_i == alpha_rowPtr.size() - 1 );
+
+}
+
+void
+Mat::alpha_stats_collect(FILE *stream)
+{
+  
+  const uint n_pillars = alpha_pillar_rowPtr.size()-1;
+
+  
+  // expect perfect reuse within a pillar
+  n_col_sum = 0;
+  
+  for ( uint pillar_idx = 0; pillar_idx < n_pillars; pillar_idx++ )
+    {
+      unordered_set<int> colset; 
+      for (int i=alpha_rowPtr[alpha_pillar_rowPtr[pillar_idx]]; i<alpha_rowPtr[alpha_pillar_rowPtr[pillar_idx+1]]; ++i){
+        colset.insert(alpha_colIdx[i]);
+      }
+      n_col_sum += colset.size();
+    } 
+ 
+  // expect perfect reuse within an SM
+  // Assume workloads in the last queue (used for workload balance) are processed in an SM
+  acc_col = 0;
+  for (uint pillars_sm = 0; pillars_sm < alpha_pillarIdx.size()-1; ++pillars_sm){
+    int start = alpha_pillarIdx[pillars_sm];
+    int end = alpha_pillarIdx[pillars_sm+1];
+    unordered_set<int> colset;
+    for (uint j=alpha_rowPtr[alpha_pillar_rowPtr[start]]; j<alpha_rowPtr[alpha_pillar_rowPtr[end]]; ++j){
+      colset.insert(alpha_colIdx[j]);
+    }
+    acc_col += colset.size();
+  }
+
+  for ( uint32_t v: segVoMap ) if ( v & (1u<<31) ) atomic_op++;
+
+  const int n_sms = alpha_pillarIdx.size()-2;
+  const int n_dtiles = alpha_pillarIdx[n_sms];
+
+  int n_wps_sm_max = 0;
+  for ( int i=0; i<n_sms; i++ )
+    set_max( n_wps_sm_max, alpha_pillarIdx[i+1] - alpha_pillarIdx[i] );
+  ssize_t n_wps_assumed = n_wps_sm_max * n_sms;
+
+  vector<int> work_p_sm(n_sms);
+  vector<int> work_p_wp;
+  work_p_wp.reserve(n_wps_assumed);
+
+  int n_elts_array = alpha_vals.size();
+  assert( n_elts_array == nnz );
+
+  int n_elts_static = 0;
+  int n_elts_sm_max = 0;
+  int n_elts_wp_max = 0;
+  int n_sms_idle = 0;
+
+  for ( int i=0; i<n_sms; i++ )
+    {
+      int dtile_start = alpha_pillarIdx[i];
+      int dtile_stop = alpha_pillarIdx[i+1];
+      int n_elts = 0;
+      int n_elts2 = alpha_rowPtr[alpha_pillar_rowPtr[dtile_stop]] -
+        alpha_rowPtr[alpha_pillar_rowPtr[dtile_start]];
+      if ( !n_elts2 ) n_sms_idle++;
+      for ( int j=dtile_start; j<dtile_stop; j++ )
+        {
+          int row_start = alpha_pillar_rowPtr[j];
+          int row_stop = alpha_pillar_rowPtr[j+1];
+          int n_elts_wp = alpha_rowPtr[row_stop] - alpha_rowPtr[row_start];
+          work_p_wp.push_back(n_elts_wp);
+          set_max( n_elts_wp_max, n_elts_wp );
+          n_elts += n_elts_wp;
+        }
+      assert( n_elts == n_elts2 );
+      set_max( n_elts_sm_max, n_elts );
+      work_p_sm[i] = n_elts;
+      n_elts_static += n_elts;
+    }
+
+  while ( work_p_wp.size() < n_wps_assumed ) work_p_wp.push_back(0);
+
+  ranges::make_heap(work_p_wp, ranges::greater() ); // min_heap
+
+  int n_elts_wq = 0;
+  int wq_start = alpha_pillarIdx[n_sms];
+  int wq_stop = alpha_pillarIdx[n_sms+1];
+  for ( int j = wq_start; j < wq_stop; j++ )
+    {
+      int n_elts = alpha_rowPtr[alpha_pillar_rowPtr[j+1]] -
+        alpha_rowPtr[alpha_pillar_rowPtr[j]];
+      const int val = work_p_wp[0] + n_elts;
+      for ( size_t i=0; true; )
+        {
+          size_t lc = 2 * i + 1, rc = lc + 1;
+          if ( lc >= n_wps_assumed ) { work_p_wp[i] = val; break; }
+          size_t mc =
+            rc >= n_wps_assumed || work_p_wp[lc] < work_p_wp[rc] ? lc : rc;
+          if ( work_p_wp[mc] >= val ) { work_p_wp[i] = val; break; }
+          work_p_wp[i] = work_p_wp[mc];
+          i = mc;
+        }
+      //  assert( ranges::is_heap(work_p_wp,ranges::greater()) );
+      n_elts_wq += n_elts;
+    }
+  ranges::sort_heap(work_p_wp,ranges::greater() );
+
+  assert( n_elts_wq + n_elts_static == n_elts_array );
+
+  double sm_imb_pct = 1e2 * n_elts_sm_max * n_sms / n_elts_static - 100;
+  double wp_sta_imb_pct =
+    1e2 * n_elts_wp_max * n_wps_assumed / n_elts_static - 100;
+  double wp_all_imb_pct =
+    1e2 * work_p_wp[0] * n_wps_assumed / n_elts_array - 100;
+  fprintf(stream,
+          " %d sms (%d idle), %.0f%% imb;  static work %d dtiles, %.0f%% imb.\n",
+          n_sms, n_sms_idle, sm_imb_pct, n_dtiles, wp_sta_imb_pct );
+  fprintf(stream,
+          " Work %.0f%% static, all work: %.0f%% wp imb\n",
+          1e2 * n_elts_static / n_elts_array,
+          wp_all_imb_pct );
+
+  fprintf(stream, " %d pillars\n", n_pillars );
+
+}
+
 void Mat::csr2tile(){
 
 
@@ -421,11 +1071,16 @@ void Mat::csr2tile(){
 
     bool print_bucket = false;
 	int tileRows = (m+tm-1)/tm;
+    // const char* tiles_per_row_panel = "tiles_per_row_panel.csv";
+    // FILE *tile_nperf = fopen(tiles_per_row_panel,"aw");
+    vector<int> segs_per_row_panel(tileRows,0);
 	for (int i=0; i<tileRows; ++i){
 		//csr2flex_Rmajor(i);
 		//csr2flex_Cmajor(i);
 		//csr2regular(i);
-        csr2seg_Cmajor(i);
+        int temp = segPtr.size();
+        //csr2seg_Cmajor(i);
+        segs_per_row_panel[i] = segPtr.size()-temp;
 	} 
 
     assert( nnz_csr == seg_rowPtr.back() );
@@ -435,7 +1090,8 @@ void Mat::csr2tile(){
     bool seg_sort = false;
     if (seg_sort) {
         //permute_segs();
-        sortSegs();
+        //dfsSegs();
+       sliWinSegs();
     }
     
         int device_id;
@@ -453,26 +1109,46 @@ void Mat::csr2tile(){
         assert( nnz == nnz_csr );
 
         int wkload = nnz / n_sm; 
+        int segload = n_segs / n_sm;
         int seg_head_sm = 0;
-        int seg_tail_sm;
+        int seg_tail_sm = 0;
         int validate_nnz = 0;
         
         // assign segs to each sm bucket
+        bool nnz_based_split = false;
+        bool row_based_split = true;
+        int panel_idx = 0;
         for (int i=0; i<n_sm; ++i){
             next_seg.push_back( seg_head_sm );
-            int nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
+            int nz = 0;
             
-            seg_tail_sm = seg_head_sm + 1;
-            while ( seg_tail_sm < n_segs && nz<(int)(0.97*wkload) ){
-                nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
-                seg_tail_sm++;
+            if (nnz_based_split){
+                nz = segPtr[seg_head_sm+1] - segPtr[seg_head_sm];
+                seg_tail_sm = seg_head_sm + 1;
+                while ( seg_tail_sm < n_segs && nz<(int)(0.98*wkload) ){
+                    nz += (segPtr[seg_tail_sm+1] - segPtr[seg_tail_sm]);
+                    seg_tail_sm++;
+                }
             }
+            if (row_based_split && (panel_idx<tileRows) ){
+                int current_bin_num_segs = segs_per_row_panel[panel_idx];  // current row panel
+                seg_tail_sm = seg_head_sm + current_bin_num_segs;
+                while ( ++panel_idx < tileRows ){
+                    if ( (segs_per_row_panel[panel_idx] + current_bin_num_segs) > segload ){
+                        break;
+                    }
+                    current_bin_num_segs += segs_per_row_panel[panel_idx];
+                    seg_tail_sm += segs_per_row_panel[panel_idx];
+                }
+                nz += (segPtr[seg_tail_sm] - segPtr[seg_head_sm]);
+            }
+            // printf("#sm = %d, panelID = %d / %d,seg_head_sm = %d, seg_tail_sm = %d, nz = %d / %d\n",i,panel_idx, tileRows, seg_head_sm,seg_tail_sm,nz,segPtr.back());
             validate_nnz += nz;
             grouped_tailSeg.push_back( min(n_segs,seg_tail_sm) );
             if ( seg_head_sm==min(n_segs,seg_tail_sm) ){
                 empty_bucket++;
             }
-            seg_head_sm = seg_tail_sm;
+            seg_head_sm = min(n_segs,seg_tail_sm);
         }
         
         // the last bucket is used for workload balance among SMs 
@@ -483,7 +1159,7 @@ void Mat::csr2tile(){
         assert( validate_nnz==segPtr.back() );
         assert( grouped_tailSeg.size()==n_sm+1 );
         assert( next_seg.size()==n_sm+1 );
-    
+        //printf("empty_bucket = %d, balance_segs = %d, balance_row_panels = %d\n",empty_bucket, n_segs-seg_head_sm, tileRows-panel_idx);
 }
 void Mat::print3(int l){
     if ( true ){
@@ -513,7 +1189,7 @@ void Mat::print3(int l){
     printf("\n");
 }
 
-void Mat::csr2seg_Cmajor(int ridx){
+int Mat::csr2seg_Cmajor(int ridx, unordered_map<int,unordered_set<int>> &duplicate_sparse_mat, int &nnz_rowPtr){
 	// row tile upper bound and lower bound
 	int rowStart = ridx * tm;
 	int rowEnd = min(m, (ridx+1)*tm); // exclusive
@@ -521,14 +1197,12 @@ void Mat::csr2seg_Cmajor(int ridx){
 	// keep track of the cols in each row
 	std::vector<int> cOffset(tm, 0);
 
-    // {col, val}, for kernel v31 
+    // {col, val}
     std::vector<std::vector<std::pair<int,float>>> segcv(tm, std::vector<std::pair<int,float>>()); 
 
-
     int dif = 0.1*nnz_limit; 
-    int nnzInSeg = 0;
-    int nnz_cur_panel = rowPtr[rowEnd] - rowPtr[rowStart];    
-
+    int nnzInSeg = 0;   
+    int tiles_in_current_panel = 0;
     // If n_nodes_z_out>0 some panels can be empty, which tiling can't handle.
     assert( !dl.dl_original->n_nodes_z_out );
     vector<int> atom(tm, 0);
@@ -540,71 +1214,58 @@ void Mat::csr2seg_Cmajor(int ridx){
     // collect segs in the panel
     for ( auto [j,ncol]: occ_cols ) {
         
-        int segId = segPtr.size()-1;
-        for ( int i=rowStart; i<rowEnd; ++i ){
+        for ( int i=rowStart; i<rowEnd; ++i ){ 
             // absolute position of the nze in csr, idx = base + offset
             int c = rowPtr[i] + cOffset[i-rowStart];
+            if (duplicate_sparse_mat[i].find(colIdx[c])!=duplicate_sparse_mat[i].end()){ 
+                cOffset[i-rowStart]++;
+                continue;
+            }
             if ( colIdx[c]==j && c<rowPtr[i+1] ){
-                // nze values
-                segNzRowIdx.push_back(i-rowStart);
-                segNzColIdx.push_back(j);
+                duplicate_sparse_mat[i].insert(j); // mark it as visited, but not necessary in the third round
                 
-                segcv[i-rowStart].push_back({j,vals[c]}); // for v31 kernel
-
-                segNzRCIdx.push_back(i-rowStart); 
-                segNzRCIdx.push_back(j);
-                newVals[pos++] = vals[c];
+                segcv[i-rowStart].push_back({j,vals[c]}); 
                 cOffset[i-rowStart]++;
                 atom[i-rowStart]++;
                 nnzInSeg++;
 
-                if ( !cols_seg.count(segId) || cols_seg[segId].back()!=j ){
-                    cols_seg[segId].push_back(j);
-                }
             }
         }
+        //if (ridx==73) printf("j = %d, last_col = %d, nnzInSeg = %zu\n",j,last_col,nnzInSeg);
         if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
         
-            // for kernel v31
-            if ( !seg_rowPtr.empty() ) seg_rowPtr.push_back( seg_rowPtr.back() + 0 );
-            else seg_rowPtr.push_back( 0 );
-            
-            for ( int i=0; i<tm; ++i ){
-                seg_rowPtr.push_back( seg_rowPtr.back() + segcv[i].size() );
+            nnz_rowPtr += nnzInSeg;
+            for ( int i=0; i<rowEnd-rowStart; ++i ){
+                nnzInSeg -= segcv[i].size();
+                alpha_rowPtr.push_back( alpha_rowPtr.back() + segcv[i].size() );
+                // row-major in each tile
                 for ( auto &p:segcv[i] ){
-                    segNzCV.push_back((float)p.first); // col of the nz is stored in float
-                    segNzCV.push_back(p.second);
+                    alpha_colIdx.push_back(p.first); // col of weight
+                    alpha_vals.push_back(p.second);
                 }
                 segcv[i].clear();
             }
-
-
-            aux_seg.push({ ridx, segPtr.size()-1 }); // {seg_row, seg_idx}
-            id2r[segPtr.size()-1] = ridx;
-            count_segs[ridx]++;
-            segPtr.push_back(segPtr.back()+nnzInSeg);
-            nnzInSeg = 0;
+            assert(nnzInSeg == 0);
            
-            for (int i=rowStart; i<rowStart+tm; ++i){
-                if ( i<rowEnd ){
-                    if ( atom[i-rowStart]>=0 && atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
-                        // if the #nz in a specific row of a seg 
-                        // is less than that of the whole row,
-                        // the row requires "atomic add".
-                        // use MSB to mark it.
-                        segVoMap.push_back( voMp[i] | (1<<31) );
-                    }else{ 
-                        segVoMap.push_back( voMp[i] );
-                    }
-                }else{
-                    // for the last panel, the rows may be less than tm 
-                    segVoMap.push_back(1<<(bit_width((uint)m)+1));
+            for (int i=rowStart; i<rowEnd; ++i){
+                
+                if ( atom[i-rowStart]>=0 && atom[i-rowStart]<(rowPtr[i+1]-rowPtr[i]) ){
+                    // if the #nz in a specific row of a seg 
+                    // is less than that of the whole row,
+                    // the row requires "atomic add".
+                    // use MSB to mark it.
+                    segVoMap.push_back( voMp[i] | (1<<31) );
+                }else{ 
+                    segVoMap.push_back( voMp[i] );
                 }
                 
                 atom[ i-rowStart ] = 0;
             }
+            alpha_pillar_rowPtr.push_back(alpha_pillar_rowPtr.back() + rowEnd - rowStart);
+            tiles_in_current_panel++;
         }
     }
+    return tiles_in_current_panel;
 }
 
 void
@@ -718,7 +1379,7 @@ void Mat::csr2flex_Rmajor(int ridx){
 			//  #nze in the i-th row
 			
 			// c check is necessary because it constraines nze within the i-th row
-                        while ( c<rowPtr[i+1] && colIdx[c]<right ){
+            while ( c<rowPtr[i+1] && colIdx[c]<right ){
                 //char rc = 0;
                 int rc16 = 0;
 

@@ -5,5 +5,6 @@ sspmm_32
 *.o
 *.d
 *.csv
+*.txt
 *.log
 *.out

@@ -21,6 +21,11 @@ DataLoader::DataLoader(const std::string& data_path, const int di)
     while(std::getline(ss1,word,',')){
         rowPtr.push_back(std::stoi(word));        
     }
+    uni_nb = 0;
+    for (int i=1; i<rowPtr.size(); ++i){
+        if ( rowPtr[i]-rowPtr[i-1]==1 ) uni_nb++;
+    }
+
     
     std::getline(fin,line);
     std::stringstream ss2(line);
@@ -195,7 +200,7 @@ DataLoader::cuda_alloc_cpy()
             for (int j=0; j<dim; ++j){
 
               if ( opt_debug )
-                cpuX.push_back(1);
+                cpuX.push_back(i);
               else{
                 cpuX.push_back( 2*(float)rand()/(float)RAND_MAX - 1.0f );
               }
@@ -231,7 +236,7 @@ DataLoader::gpuC_zero()
 DataLoader::DataLoader(const DataLoader& dl):dl_original(&dl)
 {
   #define CPY(m) m = dl.m
-  CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name);
+  CPY(m); CPY(n); CPY(dim); CPY(c); CPY(nnz); CPY(graph_name); CPY(uni_nb);
   #undef CPY
 }
 
@@ -326,6 +331,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
   // dl, starting at vertex 0.
 
   vertex_order_abbr = "DFS";
+  uni_nb = dl.uni_nb;
 
   assert( dl.rowPtr.size() == n + 1 );
 
@@ -355,6 +361,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
       while ( !stack.empty() )
         {
           auto& dst_iter = stack.back();
+          // search for the unvisited neighbor
           while ( dst_iter && vo_to_dfs[ dst_iter.front() ] )
             dst_iter.advance(1);
           if ( !dst_iter ) { stack.pop_back();  continue; }
@@ -370,7 +377,7 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
 
       if ( rowPtr.size() > n ) break;
 
-      // Find a vertex that has not been searched.
+      // Find a vertex that has not been searched. (find the next root)
       while ( ++dfs_root_vo_idx < n && vo_to_dfs[dfs_root_vo_idx] );
       assert( dfs_root_vo_idx < n );
     }
@@ -389,16 +396,16 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
   //
   for ( auto src_vo: views::iota(size_t(0),n) )
     {
-      const auto src_dfs = vo_to_dfs[src_vo];
+      const auto src_dfs = vo_to_dfs[src_vo]; // DFS order of source vertex.
       const int d = dl.rowPtr[src_vo+1] - dl.rowPtr[src_vo];
       assert( rowPtr[src_dfs] + d == rowPtr[src_dfs+1] );
-
+      
       // Sort destinations.  Tiling algorithm needs dests sorted.
       vector< pair<float,uint> > perm;  perm.reserve(d);
       const auto e_idx_vo = dl.rowPtr[ src_vo ];
       for ( auto e: views::iota( e_idx_vo, e_idx_vo + d ) )
         perm.emplace_back( dl.vals[ e ], vo_to_dfs[ dl.col[ e ] ] );
-      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } );
+      ranges::sort(perm, ranges::less(), [](auto& v) { return v.second; } ); // sort column in ascending order
 
       uint e_idx_dfs_i = rowPtr[src_dfs];
       for ( auto& [val, dst_new]: perm )
@@ -465,6 +472,7 @@ DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
 
   vertex_order_abbr = "RBT";
   gpuX = dl.gpuX;
+  uni_nb = dl.uni_nb;
 
   // Variations from Balaji 23 ISPASS 
   //
@@ -785,6 +793,7 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
   //  }
   gpuX = dl.gpuX;
   vertex_order_abbr = "GOR";
+  uni_nb = dl.uni_nb;
 
   assert( dl.rowPtr.size() == n + 1 );
 

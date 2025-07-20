@@ -3591,7 +3591,7 @@ __global__
 void flexspmm_cuda_k8_vec2_v32(){ 
     // requires preprocess dense mat B
 
-    timing_start(); 
+   // timing_start(); 
     
     const Mat_POD& md = mat_dev;
     const int wp_id = threadIdx.x>>5; //threadIdx.x / 32;
@@ -3677,7 +3677,7 @@ void flexspmm_cuda_k8_vec2_v32(){
         } // end tile-seg row loop
     } // end tile-segs loops
     
-        timing_end();
+       // timing_end();
 }
 template<int tm, int CF, int warps>
 __global__
@@ -4003,6 +4003,126 @@ void flexspmm_cuda_vec1_v35(){
     
         timing_end();
 }
+
+
+template<int tm, int CF, int warps>
+__global__
+void alpha_w_atomic_spmm_v36(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();
+    const int wp_id = threadIdx.x / 32; // threadIdx.x >> 5;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    const int row_id = lane_id>>3; // 8 threads process a row
+    const int c_col = lane_id & 0x7; 
+
+    __shared__ int pillar_idx[2]; // two warps per block
+    
+    int fetch_row_id;
+    int nsi = sm_id;
+
+    // alpha_pillarIdx_dev contains pillar start index for each SM, with length #SM + 1
+    int head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+    const int tail_pillar_idx = md.alpha_pillarIdx_dev[nsi+1];   // the begin pillar index of the (nsi+1)-th SM
+    
+    while ( true ) {
+        
+        // counter_dev is pillar idx_offset within each SM, with length #SM + 1  (initialized to 0)
+        int pillar_idx_0 = lane_id ? 0 : atomicAdd( &md.counter_dev[ nsi ], 1 );
+        __syncwarp();
+        if ( lane_id == 0 ) pillar_idx[ wp_id ] = pillar_idx_0 + head_pillar_idx;
+        __syncwarp();
+
+        int work_pillar_idx = pillar_idx[ wp_id ];      // the index of the row pillar to work on by the current warp
+        // if the work pillar is beyond the tail segment, row pillars within the SM are exhausted. The current warp
+        // will switch to work on row pillars belonging to the workload balance.
+        if ( nsi < md.sms && work_pillar_idx >= tail_pillar_idx ) { 
+            nsi = md.sms; 
+            head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+            continue; 
+        }
+        // if the work pillar is beyond the last segment, all row pillars are exhausted.
+        if ( nsi == md.sms && work_pillar_idx >= md.n_segs ) break;
+
+        int row_start = md.alpha_pillar_rowPtr_dev[work_pillar_idx];           // the first row of the row pillar
+        int row_end = md.alpha_pillar_rowPtr_dev[work_pillar_idx+1];          // the first row of the next row pillar
+        
+        // visit all rows of the row pillar
+        // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
+        // As such, the incremental is 4
+        for ( int r_lane_0 = row_start; r_lane_0<row_end; r_lane_0 += 4 ){
+
+          // DMK: Because of warp-wide fetch_row_id, need to have all threads active.
+          const int r_idx = r_lane_0 + row_id;
+          const bool have_work = r_idx < row_end;
+
+            // each thread fetch a gold row id
+            //                        iteration0        iteration1      iteration2         iteration3         ...      iteration8
+            // for subwarp 0, r_idx = row_start,        row_start + 4,  row_start + 8,     row_start + 12     ...      row_start + 32
+            // for subwarp 1, r_idx = row_start + 1,    row_start + 5,  row_start + 9,     row_start + 13     ...      row_start + 33
+            // for subwarp 2, r_idx = row_start + 2,    row_start + 6,  row_start + 10,    row_start + 14     ...      row_start + 34
+            // for subwarp 3, r_idx = row_start + 3,    row_start + 7,  row_start + 11,    row_start + 15     ...      row_start + 35
+            if ( (r_idx-row_start)%32 == row_id ){
+                // a subwarp performs the fecth once every 8 iterations
+                //                   iteration0         iteration1      iteration2         iteration8
+                // subwarp 0       0,4,8,12,...,28                                         32,36,40,...
+                // subwarp 1       1,5,9,13,...,29                                         33,37,41,...   
+                // subwarp 2       2,6,10,14,...,30                                        34,38,42,... 
+                // subwarp 3       3,7,11,15,...,31                                        35,39,43,...
+                if ( (r_idx + c_col*4) < row_end){
+                    fetch_row_id = md.segVoMap_dev[r_idx + c_col*4];
+                }  
+            }
+            int cur_rowPtr = have_work ? md.alpha_rowPtr_dev[ r_idx ] : 0;
+            int nnz_cur_row =
+              have_work ? md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr : 0;
+            
+            // broadcast within a subwarp, each subwarp has 8 threads                    
+            // it0, 0 broadcast v to 0,1,...7   ,  8 broadcast v to 8,9,..15   ,   16 broadcast v to 16,17,..23   ,  24 broadcast v to 24,25,..31 
+            // it1, 1 broadcast v to 0,1,...7   ,  9 broadcast v to 8,9,..15   ,   17 broadcast v to 16,17,..23   ,  25 broadcast v to 24,25,..31
+            // it2, 2 broadcast v to 0,1,...7   ,  10 broadcast v to 8,9,..15   ,   18 broadcast v to 16,17,..23   ,  26 broadcast v to 24,25,..31
+            // it3, 3 broadcast v to 0,1,...7   ,  11 broadcast v to 8,9,..15   ,   19 broadcast v to 16,17,..23   ,  27 broadcast v to 24,25,..31
+            int gold_row_id = __shfl_sync(~0, fetch_row_id, (r_idx-row_start)/4%8, 8);
+            int actual_row = gold_row_id & 0x7fffffff;
+            int atomicORnot = gold_row_id & (1<<31); // get MSB
+            int addr = actual_row*md.k;
+            
+            // 8 threads process a C row
+            for ( int cc = c_col; cc<md.k; cc+=8 ){ 
+                float res = 0;
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                    
+                   // column & val 
+                   int weight_c = md.alpha_colIdx_dev[ cur_rowPtr + z ];
+                   float weight_v = md.alpha_vals_dev[ cur_rowPtr + z ];
+                   
+                   float bv = md.shadow_b_dev[ weight_c*md.k + cc ];
+                
+                   res += weight_v * bv;
+                }    
+                // store results back  
+                if ( have_work && actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        
+                        atomicAdd( &md.mat_c_dev[ addr + cc ], res);
+                    }else{
+                        
+                        md.mat_c_dev[ addr + cc ] = res;
+                    }
+                    
+                }
+            }
+            
+        } // end tile-seg row loop
+       
+    } // end tile-segs loops
+        timing_end();
+}
+
 
 GPU_Info
 print_gpu_and_kernel_info()
@@ -4472,7 +4592,7 @@ void run(DataLoader& input_vo){
     const int fp32_per_chip = info.get_fp32_per_sm() * num_sm;
    
     bool roofline = false; 
-    if ( roofline ){
+    if ( roofline | true ){
         NPerf_metric_collect("sm__warps_active.avg.pct_of_peak_sustained_active"); // occupancy                                                                            
   /****************************************** colect data for roofline ***************************************/
         // the following 8 events are related L1 Cache access , each trans is 128 bytes
@@ -4505,6 +4625,7 @@ void run(DataLoader& input_vo){
     NPerf_metric_collect("sm__cycles_elapsed.max");                                                                            
     NPerf_metric_collect("sm__inst_executed.sum");
     NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes.sum");
+    NPerf_metric_collect("l1tex__m_xbar2l1tex_read_bytes_mem_global_op_atom.sum");
     NPerf_metric_collect("l1tex__m_l1tex2xbar_write_bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_ld.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_global_ld.sum");
@@ -4528,6 +4649,11 @@ void run(DataLoader& input_vo){
     NPerf_metric_collect("dram__bytes.sum");
     NPerf_metric_collect("sm__sass_inst_executed_op_global_atom.sum"); 
     
+    NPerf_metric_collect("lts__t_sectors_op_read.sum");
+    NPerf_metric_collect("lts__t_sectors_op_atom.sum");
+    NPerf_metric_collect("lts__t_sectors_op_red.sum");
+
+    NPerf_metric_collect("l1tex__average_t_sectors_per_request_pipe_lsu_mem_local_op_ld.ratio");
     // ------------ run baseline cuSpmm ----------------
     //input_dfs.c_cuSpmm_run(perfRes);
     //input_deg.c_cuSpmm_run(perfRes);
@@ -4624,7 +4750,7 @@ void run(DataLoader& input_vo){
 //#define flex_kernel flexspmm_cuda_w_pre_w_vec_v19
 
 // v31: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 1 result per thread 
-#define flex_kernel flexspmm_cuda_k4_vec1_v31
+//#define flex_kernel flexspmm_cuda_k4_vec1_v31
 //v32: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp,  2 results per thread
 //#define flex_kernel flexspmm_cuda_k8_vec2_v32
 // v33: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
@@ -4632,7 +4758,7 @@ void run(DataLoader& input_vo){
 // v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
 //#define flex_kernel flexspmm_cuda_k32_vec4_v34
 //#define flex_kernel flexspmm_cuda_vec1_v35
-    
+#define flex_kernel alpha_w_atomic_spmm_v36    
     
     // Vector size of instructions that load B matrix elements.
     map<string,int> k_prop_vec_b
@@ -4684,7 +4810,7 @@ void run(DataLoader& input_vo){
         };
     
 #ifdef TM_1_2
-        SPECIFY_KERNEL(flex_kernel, 28, NBX, NBY, NT);
+        //SPECIFY_KERNEL(flex_kernel, 28, NBX, NBY, NT);
         SPECIFY_KERNEL(flex_kernel, 29, NBX, NBY, NT);
 #endif
 
@@ -4814,7 +4940,7 @@ void run(DataLoader& input_vo){
                  ki.cfa.localSizeBytes, ki.cfa.sharedSizeBytes );
         }
 
-    const char* stats_file_name = "flex-tile-stats.log";
+    const char* stats_file_name = "flex-tile-stats2.log";
     FILE *tile_stats = fopen(stats_file_name,"w");
     const char* nperf_file_name = "flex-tile-nperf.csv";
     FILE *tile_nperf = fopen(nperf_file_name,"aw");
@@ -4835,26 +4961,33 @@ void run(DataLoader& input_vo){
         assert( block_n_wps * wp_sz == threads );
         
         
-        spMats[id].csr2tile();
+        // spMats[id].csr2tile();
+        //printf("Order: %s\n", input.vertex_order_abbr.c_str());
+        spMats[id].csr2_DiagTiling();
         fprintf(tile_stats,"** Data for kernel %s\n",aki.name_tmpl);
-        mat.stats_collect2(tile_stats);
-        //continue;
-
+        
+        //mat.stats_collect2(tile_stats);
+        
+        mat.alpha_stats_collect(tile_stats);
+        
         fprintf(tile_stats,"\n");
         if ( table.num_lines == 0 ){
            printf("block dim: %d\n", threads);
            printf("cuSpmm setup/µs: %.2f , prosessing/µs: %.2f, total/µs: %.2f\n",
                    perfRes.cuSpmmSetup,perfRes.cuSpmmProcessing,perfRes.cuSpmm_time); 
         }
-        mat.transfer2();
-        spMats[id].dataVolume_est2();
+        // mat.transfer2();
+        // spMats[id].dataVolume_est2();
+        mat.alpha_transfer();
+        spMats[id].alpha_dataVolume_est();
         spMats[id].launch_prep();
-
+        
         if (input.vertex_order_abbr != "OVO"){
             const int blocks = num_sm * 8;
             flexspmm_v9_permuteX<<<blocks, 128>>>();        
         }
-    
+        cudaDeviceSynchronize();
+        
         // Compute the expected number of multiply/add instructions.
         //
         const int64_t n_madd = spMats[id].newVals.size()*spMats[id].k; // #FMA
@@ -4887,6 +5020,7 @@ void run(DataLoader& input_vo){
         if ( const int max_wps = grid_sizes.back() * block_n_wps;
              timing_items.size() < max_wps )
           {
+            
             timing_items.resize( max_wps );
             timing_items_bytes = timing_items.size() * sizeof(timing_items[0]);
             CE( cudaFree( timing_dh.timing_items ) );
@@ -4895,7 +5029,7 @@ void run(DataLoader& input_vo){
                 ( timing_dev, &timing_dh, sizeof(timing_dh),
                   0, cudaMemcpyHostToDevice ) );
           }
-
+        
         for ( const uint gridx: grid_sizes )
           {
             const dim3 grid_sz = { gridx, 1, 1 };
@@ -4906,7 +5040,6 @@ void run(DataLoader& input_vo){
             const int num_blocks = grid_sz.x * grid_sz.y * grid_sz.z;
             const int grid_n_wps = num_blocks * block_n_wps;
 
-
             pTable_Row row(table);
             Kernel_Info* const ki = &info.get_info(kernels[id].k_ptr);
             typedef void (*KPtr)();
@@ -4914,20 +5047,21 @@ void run(DataLoader& input_vo){
             CE( cudaMemset( timing_dh.timing_items, 0, timing_items_bytes ) );
             CE( cudaDeviceSynchronize() );
             NPerf_metrics_off();
-
             float spgemm_duration;
             CE( cudaEventRecord(spgemm_start,0) );
 
             /// Launch Kernel -- Without Performance Counter Sampling
             //
-            CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
-            CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
-            KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
-            //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); //v24
+            //CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
             
+            CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) );
+            CE( cudaMemset( mat.counter_dev, 0.0, (mat.sms+1)*sizeof(int) ) );
+            KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+            
+            //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); //v24
             //
             // Until NPerf_metrics_off is fixed event timing won't work.
-
+            
             CE( cudaEventRecord(spgemm_stop,0) );
             CE( cudaEventSynchronize(spgemm_stop) );
             CE( cudaEventElapsedTime(&spgemm_duration, spgemm_start, spgemm_stop) );
@@ -4942,13 +5076,13 @@ void run(DataLoader& input_vo){
             
             /// Launch Kernels -- With Performance Counter Sampling
             //
-            CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) );
+            // CE( cudaMemcpy(mat.next_seg_dev, mat.next_seg.data(), mat.next_seg.size()*sizeof(int), cudaMemcpyHostToDevice) ); for kernels v35 or earlier kernels
             CE( cudaMemset( mat.mat_c_dev, 0.0, mat.m*mat.k*sizeof(float) ) ); 
+            CE( cudaMemset( mat.counter_dev, 0.0, (mat.sms+1)*sizeof(int) ) );
             for ( NPerf_data_reset(); NPerf_need_run_get(); ){
-                KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
+               KPtr(ki->func_ptr)<<<grid_sz,block_sz>>>();
                 //KPtr(ki->func_ptr)<<<grid_sz,block_sz, 32*warps*(4+4+4)+warps>>>(); // v24
             }
-            
 
             // Compute per-sm minimum-start and maximum-finish (end) times.
             //
@@ -4997,10 +5131,10 @@ void run(DataLoader& input_vo){
             // times longer than it would be if the workload were
             // perfectly balanced.
 
-              table.entry("Ord", "%3s", input.vertex_order_abbr);
-              fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
-              table.entry("tm", "%3d", spMats[id].tm);
-              fprintf(tile_nperf,"%3d,", spMats[id].tm);
+            table.entry("Ord", "%3s", input.vertex_order_abbr);
+            fprintf(tile_nperf,"%3s,", input.vertex_order_abbr.c_str());
+            table.entry("tm", "%3d", spMats[id].tm);
+            fprintf(tile_nperf,"%3d,", spMats[id].tm);
 
               // The maximum number of active blocks per SM for this
               // kernel when launched with a block size of thd_per_block.
@@ -5031,11 +5165,21 @@ void run(DataLoader& input_vo){
               table.entry("aw", "%2d", act_wps);
               fprintf(tile_nperf,"%2d,", act_wps);
 
-              table.entry("bkt", "%3d", mat.empty_bucket );
-              fprintf(tile_nperf,"%3d,",  mat.empty_bucket );
+              if ( true ){
+                table.entry("ep", "%.2f", mat.empty_wp_p );
+                fprintf(tile_nperf,"%.2f,",  mat.empty_wp_p );
+                table.entry("nzp", "%.2f", mat.band_nz_p );
+                fprintf(tile_nperf,"%.2f,",  mat.band_nz_p );
+              }
+              
               if (false){ 
-                table.entry("atm", "%d", mat.atomic_op );
-                fprintf(tile_nperf,"%d,",  mat.atomic_op );
+                  double sh_ld = NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
+                  table.entry( "sh_ld", "%5.3f",sh_ld*1000/n_madd );
+                  
+                  int ld_trans_req = NPerf_metric_value_get("l1tex__average_t_sectors_per_request_pipe_lsu_mem_local_op_ld.ratio");
+                  table.entry("1rto", "%4d", ld_trans_req );
+                  fprintf(tile_nperf,"%4d,",  ld_trans_req );
+                
               }
               const int64_t n_tiles = mat.nnzTile.size();
               const int64_t n_segs = mat.segPtr.size()-1;
@@ -5062,25 +5206,31 @@ void run(DataLoader& input_vo){
               const double t_p_tr = n_tiles / n_t_rows;
 
               if ( false ) table.entry("t/tr", "%4.0f", t_p_tr);
-
+              
+              // C reads incured by reassignment.
+              // normalized by 4*mat.m*mat.k 
+              //table.entry("atm/r", "%f", mat.atomic_op*1.0*mat.k/mat.m );
+              //fprintf(tile_nperf,"%f,",  mat.atomic_op*1.0*mat.k/mat.m );
+              
+              
               // Number of nz per occupied tile column.
               const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
               // Worst-case: 1.  Ideal: Average degree.
-              if (false){
-                  table.entry("B-Re1", "%5.2f", nz_p_toc);
-                  fprintf(tile_nperf,"%5.2f,", nz_p_toc);
+              table.entry("B-Re1", "%5.2f", nz_p_toc);
+              fprintf(tile_nperf,"%5.2f,", nz_p_toc);
 
-                  table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
-                  fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
-                  
+              table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
+              fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
+              if (false){    
+                   
                   table.entry("C-", "%d", mat.n_col_sum);
-                  fprintf(tile_nperf,"%d,", mat.n_col_sum);
+                  fprintf(tile_nperf,"%d,", (int)mat.n_col_sum);
 
-                  table.entry("C~", "%d", mat.acc_col);
-                  fprintf(tile_nperf,"%d,", mat.acc_col);
+                  table.entry("C~/n", "%f", mat.acc_col*1.0/mat.m);
+                  fprintf(tile_nperf,"%f,", mat.acc_col*1.0/mat.m);
                   
                   table.entry("segs", "%d", n_segs);
-                  fprintf(tile_nperf,"%d,", n_segs);
+                  fprintf(tile_nperf,"%d,", (int)n_segs);
               }
               // Get and print elapsed time.
               //
@@ -5226,7 +5376,7 @@ void run(DataLoader& input_vo){
               }
 
               const bool v_vec2_rc = k_prop_vec2_rc.contains(aki.name_base);
-              const int vec_b_sz = max(1,k_prop_vec_b[aki.name_base]);
+              const int vec_b_sz = max(1,k_prop_vec_b[aki.name_base]); // 1 for v36
 
               
               const int n_ld_b_elt = 1; // Loads per B matrix element.
@@ -5235,31 +5385,39 @@ void run(DataLoader& input_vo){
               const double c_loads = mat.atomic_op * 1.0 / mat.nnz / mat.k;
               
               if ( false ){
-                  const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
+                  //const int n_ld_seg = mat.tm+2+1;  // Loads per tile-segment. (segVoMap + segPtri + grouped_tailSeg)
                   // Loads per nz. ( r , c, edge weight)
-                  const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
-                  const int n_ld_nz = 3; 
+                  //const int n_ld_insn_nz = 1 + ( v_vec2_rc ? 1 : 2 );
+                  //const int n_ld_nz = 3; 
                  
               } 
-              const int n_ld_seg = mat.tm+1 + mat.tm+1;  // Loads per tile-segment. (segVoMap + grouped_tailSeg + seg_rowPtr)
-              // Loads per nz. ( col, edge weight)
-              const int n_ld_insn_nz = v_vec2_rc ? 1 : 2; // here I don't distinguish vectorizing RC from vectorizing CV
-              const int n_ld_nz = 2; 
+            //   const int n_ld_seg = mat.tm+1 + mat.tm+1;  // Loads per tile-segment. (segVoMap + grouped_tailSeg + seg_rowPtr)
+            //   // Loads per nz. ( col, edge weight)
+            //   const int n_ld_insn_nz = v_vec2_rc ? 1 : 2; // here I don't distinguish vectorizing RC from vectorizing CV
+                const int n_ld_nz = 2; 
 
               // item1 (seg/tile -level loads):    (n_ld_seg+seg_idx_update) / nz_p_seg 
               // item2 (non-zero loads):    n_ld_insn_nz / ( k_prop_rc_direct.contains(aki.name_base) ? 1.0 : nz_p_seg / ceil(nz_p_seg/32) ) 
               // enhanced by vectorizing B:  (item1 + item2) / n_b_elt_p_thd
               // item3 (B is enhanced by reuse):    n_ld_insn_b_elt / nz_p_toc 
               // item4 (atomic update C):  c_loads 
-              const double n_ld_p_madd = 
-                  ( 1.0*(n_ld_seg+seg_idx_update) / nz_p_seg
-                      + 1.0*n_ld_insn_nz /
-                        ( k_prop_rc_direct.contains(aki.name_base)
-                          ? 1.0 : 1.0*nz_p_seg / ceil(nz_p_seg/32) ) )
-                    / n_b_elt_p_thd
+            //   const double n_ld_p_madd = 
+            //       ( 1.0*(n_ld_seg+seg_idx_update) / nz_p_seg
+            //           + 1.0*n_ld_insn_nz /
+            //             ( k_prop_rc_direct.contains(aki.name_base)
+            //               ? 1.0 : 1.0*nz_p_seg / ceil(nz_p_seg/32) ) )
+            //         / n_b_elt_p_thd
+            //         + 1.0*n_ld_insn_b_elt / nz_p_toc
+            //         + c_loads;
+
+            // term1, pillar level loads, pillar_rowPtr (#pillars+1) + pillarIdx (sm+2) + counter (sms+1)
+            // term2, non-zero loads, the number of weights (nnz) + weight columns (nnz)
+            // term3, B loads, 
+            // term4, atomic update C
+              const double n_ld_p_madd = (mat.alpha_pillar_rowPtr.size() + mat.alpha_pillarIdx.size() + mat.sms+1)/ mat.nnz / mat.k
+                    + 2.0 / mat.k
                     + 1.0*n_ld_insn_b_elt / nz_p_toc
-                    + c_loads;
-                   
+                    + c_loads;   
 
 
               table.entry
@@ -5273,9 +5431,10 @@ void run(DataLoader& input_vo){
               table.entry( "GC", "%4.1f", n_ld_p_madd);
               fprintf(tile_nperf, "%4.1f,", n_ld_p_madd);
 
-
-              table.entry( "pG", "%4.1f", 1.0*mat.est_ld_bytes/4/mat.est_fp);
-              fprintf(tile_nperf, "%4.1f,", 1.0*mat.est_ld_bytes/4/mat.est_fp);
+              if (false){
+                table.entry( "pG", "%4.1f", 1.0*mat.est_ld_bytes/4/mat.est_fp);
+                fprintf(tile_nperf, "%4.1f,", 1.0*mat.est_ld_bytes/4/mat.est_fp);
+              }
 
               table.entry( "LDe", "%4.1f", NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
               fprintf(tile_nperf, "%4.1f,",NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
@@ -5356,10 +5515,30 @@ void run(DataLoader& input_vo){
               // tile-level: ( group_info(2) * #sm + ( tile_rowPtr(tm+1) + voMap(tm) ) * #tiles ) * 4 / #ops 
               // nD = 4/u + 8/k + ( 2*sm + (tm+1 + tm) * #tiles) * 4 / (k * #nz)  
               double nD = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
-              double u = 4.0 / ( nD - 8.0/mat.k - ( 2*num_sm + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k) );
-              table.entry( "expBs", "%5.2f",u );
-              fprintf(tile_nperf, "%5.2f,",u);
-
+              double atom_bytes = NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes_mem_global_op_atom.sum")*1.0 / n_madd;
+              assert((int)n_madd==mat.nnz*mat.k);
+            //   double u = 4.0 / ( nD - 8.0/mat.k - ( 2*(num_sm+1) + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k) - atom_bytes);
+            //   double meta = ( 2*(num_sm+1) + (2*mat.tm+1)*mat.n_segs )*4.0 / (mat.nnz*mat.k);
+              
+              // pillar level: (2*alpha_pillarIdx_dev.size()*32 + 2*pillar_rowPtr.size()*32 )*4/#ops
+              //        2*alpha_pillarIdx_dev.size()*32: each entry of alpha_pillarIdx_dev is loaded by 32 threads twice (head & tail)
+              //        2*alpha_pillar_rowPtr_dev.size()*32: each entry of alpha_pillar_rowPtr_dev is loaded by 32 threads twice (head & tail)
+              // atom_bytes: atomic update C + counter_dev
+              // nD = 4/u + 8/k + pillar_level + atom_bytes
+              double u = 4.0 / ( nD - 8.0/mat.k - (2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd - atom_bytes );
+              if (false){
+                  table.entry( "nD", "%5.2f",nD );
+                  fprintf(tile_nperf, "%5.2f,",nD );
+                  table.entry( "8/tk", "%5.2f",(8.0)/mat.k );
+                  fprintf(tile_nperf, "%5.2f,",(8.0)/mat.k );
+                  table.entry( "meta", "%5.2f",(2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd );
+                  fprintf(tile_nperf, "%5.2f,",(2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd );
+                  table.entry( "at", "%5.2f",atom_bytes );
+                  fprintf(tile_nperf, "%5.2f,",atom_bytes );
+              }
+              table.entry( "u", "%5.2f",u );
+              fprintf(tile_nperf, "%5.2f,",u );
+    
               table.entry
                 ( "Bytes", "%5.2f",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
@@ -5367,6 +5546,15 @@ void run(DataLoader& input_vo){
               fprintf(tile_nperf, "%5.2f,",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
                     / n_madd );
+              if ( false){
+                  table.entry
+                    ( "Trans", "%5.2f",
+                      (NPerf_metric_value_get("lts__t_sectors_op_read.sum") + NPerf_metric_value_get("lts__t_sectors_op_atom.sum") + NPerf_metric_value_get("Its__t_sectors_op_red.sum"))
+                        / n_madd );
+                  fprintf(tile_nperf, "%5.2f,",
+                      (NPerf_metric_value_get("lts__t_sectors_op_read.sum") + NPerf_metric_value_get("lts__t_sectors_op_atom.sum") + NPerf_metric_value_get("Its__t_sectors_op_red.sum"))
+                        / n_madd );
+              }
               if ( false ){
                   //const double n_bytes =
                   //  4 * ( n_t_rows * n_ld_trow
@@ -5374,8 +5562,12 @@ void run(DataLoader& input_vo){
                   //        + mat.nnz * n_ld_nz
                   //        + mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
               }
+            //   const double n_bytes =
+            //     4.0 * ( 1.0 * n_segs * n_ld_seg
+            //           + 1.0 * mat.nnz * n_ld_nz
+            //           + 1.0 * mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
               const double n_bytes =
-                4.0 * ( 1.0 * n_segs * n_ld_seg
+                4.0 * ( 1.0 * (mat.alpha_pillar_rowPtr.size() + mat.alpha_pillarIdx.size())
                       + 1.0 * mat.nnz * n_ld_nz
                       + 1.0 * mat.nnz * n_ld_b_elt * mat.k / nz_p_toc );
               table.entry( "BC", "%5.2f", n_bytes / n_madd );
@@ -5461,8 +5653,8 @@ void run(DataLoader& input_vo){
                     //table.entry( "local_ld", "%7.1f",local_ld );
                     double local_st = 32*NPerf_metric_value_get("l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum");
                     //table.entry( "local_st", "%7.1f", local_st);
-                    double sh_ld = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
-                    //table.entry( "sh_ld", "%7.1f",sh_ld );
+                    double sh_ld = NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum");
+                    table.entry( "sh_ld", "%7.1f",sh_ld );
                     double sh_st = 32*NPerf_metric_value_get("l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum");
                     //table.entry( "sh_st", "%7.1f",sh_st );
                     double l1_ai = flops / (gld + gst + atm + local_ld + local_st + sh_ld + sh_st);
@@ -5499,19 +5691,23 @@ void run(DataLoader& input_vo){
               ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
                 cudaMemcpyDeviceToHost);
             resCheck( input_vo.h_ref_c.data(), h_res_c, spMats[id], perfRes );
-            //fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
+            fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
 
             float t = elap_t*(1e-3);
             perfRes.flex_spmm_time.push_back(t);
         } // warps confiuration
         //spMats[id].freeMatGPU();
-        spMats[id].freeMatGPU2();
+        //spMats[id].freeMatGPU2();
+        spMats[id].alpha_freeMatGPU();
     }
 
-    printf("Key:  b/s,   Blocks per SM\n"
-           "      aw,    Active (Resident) Warps per SM\n"
-           "      atm/r, Atomic Operations per Row\n"
-           "      B-Re,  B Matrix Element Reuse per Segment\n");
+    printf("Key:  b/s,    Blocks per SM\n"
+           "      aw,     Active (Resident) Warps per SM\n"
+           "      atm/r,  Atomic Operations per Row\n"
+           "      B-Re1,  B Matrix Element Reuse per Pillar\n"
+           "      B-Re2,  B Matrix Element Reuse per SM\n"
+           "      ep,     The percentage of empty warps that can only fetch workloads the the #SM+1 queue\n"
+           "      nzp,    The percentage of non-zeros in the first #SM queue\n");
 
     fclose(tile_stats);
     free(h_res_c);
