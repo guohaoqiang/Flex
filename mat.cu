@@ -747,6 +747,8 @@ void Mat::csr2_DiagTiling(){
             
         }
         warps_with_weights += (nnz_current_diag_tile>0);
+        assert( j >= m || nnz_current_diag_tile );
+
         tile_width[i] = j - mat_r_start;
         //printf("tile_width[%d] = %d, nnz_current_diag_tile = %d\n",i,tile_width[i],nnz_current_diag_tile);
     }
@@ -792,11 +794,18 @@ void Mat::csr2_DiagTiling(){
                 // duplicate_sparse_mat contains the diagonal tiles after the first round
                 // if col_idx l exists in the diagonal tile of the current row pillar, OR
                 // if col_idx l exists in the diagonal tiles residing on the same SM
-                if (duplicate_sparse_mat[j].find(l)!=duplicate_sparse_mat[j].end() 
-                    || alpha_columns_per_sm[i%warps_per_sm].find(l)!=alpha_columns_per_sm[i%warps_per_sm].end()){
+
+                if ( duplicate_sparse_mat[j].contains(l)
+                    || alpha_columns_per_sm[i/warps_per_sm].contains(l) )
+                  {
                     //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
+
                     duplicate_sparse_mat[j].insert(l); // mark it as visited
-                    alpha_columns_per_sm[i%warps_per_sm].insert(l);
+
+                    assert( alpha_columns_per_sm[i/warps_per_sm].contains(l) );
+                    // DMK: Is the commented out line below needed?
+                    //  alpha_columns_per_sm[i/warps_per_sm].insert(l);
+
                     alpha_colIdx.push_back(l);
                     alpha_vals.push_back(vals[kk]);
                     entries_in_row++;
@@ -891,6 +900,45 @@ void Mat::csr2_DiagTiling(){
     // The last marks the next of the end.(#row pillars in total)
     assert(alpha_pillarIdx.size()==n_sm+2); 
     assert(segVoMap.size()+1==alpha_rowPtr.size()); 
+
+
+    // DMK: Check that matrices match.
+
+    using val_t = remove_cvref_t<decltype(vals[0])>;
+    vector< unordered_map<int,pair<int,val_t>> > row_to_cols(m);
+    for ( int r=0; r<m; r++ )
+      for ( int i: views::iota(rowPtr[r],rowPtr[r+1]) )
+        row_to_cols[r][colIdx[i]] = { 0, vals[i] };
+
+    vector<int> voMpInv(m);
+    for ( int r=0; r<m; r++ ) voMpInv[voMp[r]] = r;
+
+    int nnz_check = 0;
+    const uint ro_mask = uint(-1) >> 1;
+    for ( int rr=0; rr<alpha_rowPtr.size()-1; rr++ )
+      {
+        const int r = voMpInv[segVoMap[rr]&ro_mask];
+        for ( int i = alpha_rowPtr[rr]; i < alpha_rowPtr[rr+1]; i++ )
+          {
+            const int c = alpha_colIdx[i];
+            assert( row_to_cols[r].contains(c) );
+            auto& [ n_seen, val ] = row_to_cols[r][c];
+            assert( n_seen++ == 0 );
+            assert( alpha_vals[i] == val );
+            nnz_check++;
+          }
+      }
+    assert( nnz_check == nnz );
+
+    int rr_i = 0;
+    for ( int s=0; s<=n_sm; s++ )
+      for ( int d = alpha_pillarIdx[s]; d < alpha_pillarIdx[s+1]; d++ )
+        {
+          assert( alpha_pillar_rowPtr[d] == rr_i );
+          rr_i = alpha_pillar_rowPtr[d+1];
+        }
+    assert( rr_i == alpha_rowPtr.size() - 1 );
+
 }
 
 void
@@ -933,7 +981,7 @@ Mat::alpha_stats_collect(FILE *stream)
   int n_wps_sm_max = 0;
   for ( int i=0; i<n_sms; i++ )
     set_max( n_wps_sm_max, alpha_pillarIdx[i+1] - alpha_pillarIdx[i] );
-  int n_wps_assumed = n_wps_sm_max * n_sms;
+  ssize_t n_wps_assumed = n_wps_sm_max * n_sms;
 
   vector<int> work_p_sm(n_sms);
   vector<int> work_p_wp;
@@ -981,10 +1029,19 @@ Mat::alpha_stats_collect(FILE *stream)
     {
       int n_elts = alpha_rowPtr[alpha_pillar_rowPtr[j+1]] -
         alpha_rowPtr[alpha_pillar_rowPtr[j]];
-      work_p_wp[0] += n_elts;
+      const int val = work_p_wp[0] + n_elts;
+      for ( size_t i=0; true; )
+        {
+          size_t lc = 2 * i + 1, rc = lc + 1;
+          if ( lc >= n_wps_assumed ) { work_p_wp[i] = val; break; }
+          size_t mc =
+            rc >= n_wps_assumed || work_p_wp[lc] < work_p_wp[rc] ? lc : rc;
+          if ( work_p_wp[mc] >= val ) { work_p_wp[i] = val; break; }
+          work_p_wp[i] = work_p_wp[mc];
+          i = mc;
+        }
+      //  assert( ranges::is_heap(work_p_wp,ranges::greater()) );
       n_elts_wq += n_elts;
-      ranges::pop_heap(work_p_wp,ranges::greater() );
-      ranges::push_heap(work_p_wp,ranges::greater() );
     }
   ranges::sort_heap(work_p_wp,ranges::greater() );
 
