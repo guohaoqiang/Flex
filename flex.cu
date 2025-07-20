@@ -4053,7 +4053,12 @@ void alpha_w_atomic_spmm_v36(){
         // visit all rows of the row pillar
         // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
         // As such, the incremental is 4
-        for ( int r_idx = row_start+row_id; r_idx<row_end; r_idx += 4 ){
+        for ( int r_lane_0 = row_start; r_lane_0<row_end; r_lane_0 += 4 ){
+
+          // DMK: Because of warp-wide fetch_row_id, need to have all threads active.
+          const int r_idx = r_lane_0 + row_id;
+          const bool have_work = r_idx < row_end;
+
             // each thread fetch a gold row id
             //                        iteration0        iteration1      iteration2         iteration3         ...      iteration8
             // for subwarp 0, r_idx = row_start,        row_start + 4,  row_start + 8,     row_start + 12     ...      row_start + 32
@@ -4071,19 +4076,16 @@ void alpha_w_atomic_spmm_v36(){
                     fetch_row_id = md.segVoMap_dev[r_idx + c_col*4];
                 }  
             }
-            __syncwarp();
-            int cur_rowPtr = md.alpha_rowPtr_dev[ r_idx ];    
-            int nnz_cur_row = md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr;
+            int cur_rowPtr = have_work ? md.alpha_rowPtr_dev[ r_idx ] : 0;
+            int nnz_cur_row =
+              have_work ? md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr : 0;
             
             // broadcast within a subwarp, each subwarp has 8 threads                    
             // it0, 0 broadcast v to 0,1,...7   ,  8 broadcast v to 8,9,..15   ,   16 broadcast v to 16,17,..23   ,  24 broadcast v to 24,25,..31 
             // it1, 1 broadcast v to 0,1,...7   ,  9 broadcast v to 8,9,..15   ,   17 broadcast v to 16,17,..23   ,  25 broadcast v to 24,25,..31
             // it2, 2 broadcast v to 0,1,...7   ,  10 broadcast v to 8,9,..15   ,   18 broadcast v to 16,17,..23   ,  26 broadcast v to 24,25,..31
             // it3, 3 broadcast v to 0,1,...7   ,  11 broadcast v to 8,9,..15   ,   19 broadcast v to 16,17,..23   ,  27 broadcast v to 24,25,..31
-            unsigned mask = __activemask(); //__ballot_sync(0xffffffff, 1);
-            __syncwarp();
-            int gold_row_id = __shfl_sync(mask, fetch_row_id, (r_idx-row_start)/4%8, 8);
-            __syncwarp();
+            int gold_row_id = __shfl_sync(~0, fetch_row_id, (r_idx-row_start)/4%8, 8);
             int actual_row = gold_row_id & 0x7fffffff;
             int atomicORnot = gold_row_id & (1<<31); // get MSB
             int addr = actual_row*md.k;
@@ -4102,7 +4104,7 @@ void alpha_w_atomic_spmm_v36(){
                    res += weight_v * bv;
                 }    
                 // store results back  
-                if ( actual_row<md.m ){
+                if ( have_work && actual_row<md.m ){
                     
                     if ( atomicORnot>>31 ){
                         
