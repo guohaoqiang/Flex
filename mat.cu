@@ -713,7 +713,14 @@ void Mat::csr2_DiagTiling(){
         // These SMs can process the last bucket directly
         int nnz_current_diag_tile = 0;
         int j = mat_r_start;
+            
+#ifdef NON_UNIFORM_TILE
         while (j<m && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
+#else
+        int tile_boundary = (i==(partitions_node-1)) ? m : (mat_r_start + m/partitions_node); 
+        while (j<tile_boundary){
+#endif
+            assert(j>=mat_r_start && j<m);
             // explore row_panel
             for (int kk=rowPtr[j]; colIdx[kk]<=j; ++kk){
                 if (colIdx[kk]>=mat_r_start){
@@ -771,12 +778,19 @@ void Mat::csr2_DiagTiling(){
     for (int i=0; i<warps_with_weights; ++i){
         row_start = row_end;
         row_end += tile_width[i];
-        if (i%warps_per_sm==0){
-            col_start = col_end;
-            for (int idx=0; idx<warps_per_sm && (i+idx)<warps_with_weights; ++idx){
-                col_end += tile_width[i+idx];
+        
+#ifdef WING_ENABLED
+            if ( i%warps_per_sm==0 ){
+                col_start = col_end;
+                for (int idx=0; idx<warps_per_sm && (i+idx)<warps_with_weights; ++idx){
+                    col_end += tile_width[i+idx];
+                }
             }
-        }
+#else
+            col_start = row_start;
+            col_end = row_end;
+#endif
+
         for (int j=row_start; j<row_end; ++j){
             // visit each col_panel
             int entries_in_row = 0;
@@ -804,6 +818,7 @@ void Mat::csr2_DiagTiling(){
 
                     assert( alpha_columns_per_sm[i/warps_per_sm].contains(l) );
                     // DMK: Is the commented out line below needed?
+                    // Haoqiang: No, it is not necessary since the first round has marked all columns residing in an SM
                     //  alpha_columns_per_sm[i/warps_per_sm].insert(l);
 
                     alpha_colIdx.push_back(l);
@@ -854,30 +869,15 @@ void Mat::csr2_DiagTiling(){
             target_nnz_per_wp,rowPtr[m]-alpha_colIdx.size(),partitions_node-warps_with_weights);
     int tiles_in_total = warps_with_weights;
     
-    int nnz_current_pillar = 0;
-    vector<int> temp_alpha_rowPtr;
-    vector<int> temp_segVoMap;
-    int rows_in_current_pillar = 0;
-    int third_pillars = 0;
-
     int tileRows = (m+tm-1)/tm;
     assert(segVoMap.size()==alpha_rowPtr.size()); 
     alpha_rowPtr.push_back(nnz_rowPtr);
-    //printf("%d of %s: tileRows = %d\n",__LINE__,__FILE__,tileRows);
-    //printf("%d of %s: nnz_rowPtr = %d, rowPtr[m] = %d\n",__LINE__,__FILE__,nnz_rowPtr,rowPtr[m]);
-    //printf("%d of %s: alpha_colIdx.size() = %zu, alpha_vals.size() = %zu\n",__LINE__,__FILE__,
-    //        alpha_colIdx.size(),alpha_vals.size());
     
     for (int i=0; i<tileRows; ++i){
-        //printf("%d of %s: tiles_in_total = %d\n",__LINE__,__FILE__,tiles_in_total);
         tiles_in_total += csr2seg_Cmajor(i, duplicate_sparse_mat, nnz_rowPtr);
-        if (segVoMap.size()+1!=alpha_rowPtr.size()){
-            printf("%d of %s: i = %d\n",__LINE__,__FILE__,i);
-            assert(segVoMap.size()+1==alpha_rowPtr.size()); 
-        }
+        assert(segVoMap.size()+1==alpha_rowPtr.size()); 
     } 
     
-    //alpha_rowPtr.push_back(nnz_rowPtr);
     alpha_pillarIdx.push_back(tiles_in_total);
     
     n_segs = alpha_pillarIdx.back();

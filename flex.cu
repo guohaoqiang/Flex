@@ -4940,7 +4940,7 @@ void run(DataLoader& input_vo){
                  ki.cfa.localSizeBytes, ki.cfa.sharedSizeBytes );
         }
 
-    const char* stats_file_name = "flex-tile-stats2.log";
+    const char* stats_file_name = "flex-tile-stats.log";
     FILE *tile_stats = fopen(stats_file_name,"w");
     const char* nperf_file_name = "flex-tile-nperf.csv";
     FILE *tile_nperf = fopen(nperf_file_name,"aw");
@@ -5691,7 +5691,7 @@ void run(DataLoader& input_vo){
               ( h_res_c, spMats[id].mat_c_dev, input.gpuC_bytes,
                 cudaMemcpyDeviceToHost);
             resCheck( input_vo.h_ref_c.data(), h_res_c, spMats[id], perfRes );
-            fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
+            // fprintf(tile_nperf, "%4f\n", 100.0*perfRes.flex_spmm_errors.back()/(mat.m*mat.k));
 
             float t = elap_t*(1e-3);
             perfRes.flex_spmm_time.push_back(t);
