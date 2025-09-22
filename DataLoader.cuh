@@ -26,7 +26,8 @@ public:
     void cuda_alloc_cpy();
     void c_cuSpmm_run(Perfs& perfRes);
     void gpuC_zero();
-    
+    bool writecsr2csv=false;
+    void write_csr2csv();
 
     const DataLoader* const dl_original;
     std::vector<unsigned int> rowPtr;

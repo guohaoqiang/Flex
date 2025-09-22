@@ -10,7 +10,7 @@ DataLoader::DataLoader(const std::string& data_path, const int di)
   :dl_original(this),dim(di){
     std::string data_name = data_path.substr(data_path.find_last_of("/")+1);
     graph_name = data_name.substr(0, data_name.find(".")); 
-
+    writecsr2csv = false;
     vertex_order_abbr = "OVO"; // Original Vertex Order.
     std::fstream fin;
     fin.open(data_path,std::ios::in);
@@ -121,6 +121,9 @@ DataLoader::DataLoader(const std::string& data_path, const int di)
     if (false){
         getDegDist();
     }
+    if (writecsr2csv){
+        write_csr2csv();
+    }
 }
 
 void
@@ -217,6 +220,30 @@ DataLoader::cuda_alloc_cpy()
     }
 }
 
+void DataLoader::write_csr2csv()
+{
+    std::ofstream fout(graph_name + vertex_order_abbr + ".csv");
+    if (fout.is_open()){
+        for (int i=0; i<rowPtr.size(); ++i){
+            fout<<rowPtr[i];
+            if (i!=rowPtr.size()-1) fout<<",";
+        }
+        fout<<std::endl;
+        for (int i=0; i<col.size(); ++i){
+            fout<<col[i];
+            if (i!=col.size()-1) fout<<",";
+        }
+        fout<<std::endl;
+        for (int i=0; i<vals.size(); ++i){
+            fout<<vals[i];
+            if (i!=vals.size()-1) fout<<",";
+        }
+        fout.flush();
+        fout.close();
+    }else{
+        std::cout<<"Failed to open file "<<graph_name + ".csr.csv"<<std::endl;
+    }
+}
 void
 DataLoader::c_cuSpmm_run(Perfs& perfRes)
 {
@@ -450,6 +477,9 @@ DataLoaderDFS::DataLoaderDFS(const DataLoader& dl):DataLoader(dl)
     }
 
   cuda_alloc_cpy();
+  if (writecsr2csv){
+    write_csr2csv();
+  }
 }
 
 DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
@@ -652,6 +682,9 @@ DataLoaderRabbit::DataLoaderRabbit(const DataLoader& dl):DataLoader(dl)
 
   perm_apply(dl);
   cuda_alloc_cpy();
+  if (writecsr2csv){
+    write_csr2csv();
+  }
 }
 
 
@@ -854,6 +887,9 @@ DataLoaderGorder::DataLoaderGorder(const DataLoader& dl):DataLoader(dl)
   //
 
   cuda_alloc_cpy();
+  if (writecsr2csv){
+    write_csr2csv();
+  }
 }
 
 bool DataLoader::compare(){
