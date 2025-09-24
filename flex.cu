@@ -5525,7 +5525,14 @@ void run(DataLoader& input_vo){
               //        2*alpha_pillar_rowPtr_dev.size()*32: each entry of alpha_pillar_rowPtr_dev is loaded by 32 threads twice (head & tail)
               // atom_bytes: atomic update C + counter_dev
               // nD = 4/u + 8/k + pillar_level + atom_bytes
-              double u = 4.0 / ( nD - 8.0/mat.k - (2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd - atom_bytes );
+              double u1 = 4.0 / ( nD - 8.0/mat.k - 
+                (2* mat.alpha_rowPtr.size() + 
+                mat.alpha_pillarIdx.size() + 
+                mat.alpha_pillar_rowPtr.size())*4.0 / n_madd - atom_bytes );
+              double u2 = 4.0 / ( nD - 8.0/mat.k - 
+                (2* mat.alpha_rowPtr.size() + 
+                mat.alpha_pillarIdx.size() + 
+                8 * mat.alpha_pillar_rowPtr.size())*4.0 / n_madd - atom_bytes );
               if (false){
                   table.entry( "nD", "%5.2f",nD );
                   fprintf(tile_nperf, "%5.2f,",nD );
@@ -5536,9 +5543,11 @@ void run(DataLoader& input_vo){
                   table.entry( "at", "%5.2f",atom_bytes );
                   fprintf(tile_nperf, "%5.2f,",atom_bytes );
               }
-              table.entry( "u", "%5.2f",u );
-              fprintf(tile_nperf, "%5.2f,",u );
-    
+              table.entry( "u1", "%5.2f",u1 );
+              fprintf(tile_nperf, "%5.2f,",u1 );
+              table.entry( "u2", "%5.2f",u2 );
+              fprintf(tile_nperf, "%5.2f,",u2 );
+
               table.entry
                 ( "Bytes", "%5.2f",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-rm flex-tile-nperf.csv
+# rm flex-tile-nperf.csv
 #rm ge_spmm_roofline.csv
 
 k=8
