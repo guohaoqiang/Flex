@@ -95,7 +95,7 @@ void Edgelist::compute_degrees(bool force) {
     ++degIn[edge.second];
   }
 
-  deg.reserve(n);
+  deg.resize(n);
   for (ul u = 0; u < n; ++u) {
     deg[u] = degIn[u] + degOut[u];
   }

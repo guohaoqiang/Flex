@@ -16,8 +16,8 @@ Adjlist::Adjlist(Edgelist &g, int edge_factor/*=1*/, int node_factor/*=1*/) :
     directed(edge_factor == node_factor),
     n(g.n),
     e(edge_factor * g.e) {
-  cd.reserve(n*node_factor + 1); // warning: .size() will not be defined
-	adj.reserve(g.e*edge_factor);
+  cd.resize(n*node_factor + 1); // warning: .size() will not be defined
+	adj.resize(g.e*edge_factor);
   ranker_reset();
 }
 
@@ -98,7 +98,7 @@ vector<ul> Uadjlist::compute_degrees(Edgelist &g) { // warning: if input file is
 	vector<ul> deg;
   if(g.deg_computed) {
     Info("Transfering degrees instead of recomputing");
-    deg.reserve(n);
+    deg.resize(n);
     for (ul u = 0; u < n; u++)
       deg[ranker(u)] = g.deg[u];
   }
@@ -131,7 +131,7 @@ vector<ul> Dadjlist::compute_degrees(Edgelist &g) {
 	vector<ul> deg;
   if(g.deg_computed) {
     Info("Transfering degrees instead of recomputing");
-    deg.reserve(n);
+    deg.resize(n);
     for (ul u = 0; u < n; u++)
       deg[ranker(u)] = g.degOut[u];
   }
@@ -161,7 +161,7 @@ vector<ul> Badjlist::compute_degrees(Edgelist &g) {
 	vector<ul> deg;
   if(g.deg_computed) {
     Info("Transfering degrees instead of recomputing");
-    deg.reserve(2*n);
+    deg.resize(2*n);
     for (ul u = 0; u < n; u++) {
       deg[ranker(u)] = g.degOut[u];
       deg[ranker(u) + n] = g.degIn[u];
