@@ -690,11 +690,36 @@ void Mat::csr2_DiagTiling(){
     float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
 
+    assert( nnz == rowPtr[m] );
+
     // I assume 30 percent of nz/weights will be covered in diagonal tiles
-    const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
+    const int nnz_diagonal_tiles = alpha * nnz;
     bool tuning = false;
     const int partitions_node = warps_per_sm * n_sm; // partitions along the width
     const int nnz_p_diagonal_tile  = max(32,nnz_diagonal_tiles / partitions_node); 
+
+    const int nnz_row = nnz / m;
+
+    const float static_assign_frac_max = 0.5;
+    //
+    // Lower values provide more workload balance but less potential for
+    // exploiting reuse.
+    //
+    // Special cases:
+    //   static_assign_frac_max = 0;  // No wing non-zeros.
+    //   static_assign_frac_max = 1;  // Perfect balance possible but unlikely.
+    //   static_assign_frac_max = m;  // Add all nz used by a tile in sm.
+
+
+    const int nnz_row_limit = static_assign_frac_max * nnz_row;
+    //
+    // Note: The number of nz handled by a row in a static tile will
+    // be max( nnz_row_limit, pre_wing_tile_size ), where
+    // pre_wing_tile_size is the tile size before wing non-zeros were
+    // added.
+
+    const int tile_rows_max = 2 * m / partitions_node;
+
     if (tuning) printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
     vector<int> tile_width(partitions_node,0);
 
@@ -713,9 +738,11 @@ void Mat::csr2_DiagTiling(){
         // These SMs can process the last bucket directly
         int nnz_current_diag_tile = 0;
         int j = mat_r_start;
+        const int j_limit = min( m, j + tile_rows_max );
             
+#define NON_UNIFORM_TILE
 #ifdef NON_UNIFORM_TILE
-        while (j<m && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
+        while (j< j_limit && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
 #else
         int tile_boundary = (i==(partitions_node-1)) ? m : (mat_r_start + m/partitions_node); 
         while (j<tile_boundary){
@@ -791,20 +818,54 @@ void Mat::csr2_DiagTiling(){
             col_end = row_end;
 #endif
 
+        vector<int> col_n_uses(col_end-col_start,0);
+        for (int j=row_start; j<row_end; ++j)
+          {
+            for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){
+                const int l=colIdx[kk];
+                if (l<col_start) continue;
+                if (l>=col_end) break;
+                col_n_uses[l-col_start]++;
+            }
+          }
+
         for (int j=row_start; j<row_end; ++j){
-            // visit each col_panel
+
+          // Choose the columns in the original tile plus wing columns
+          // with the highest re-use.
+          //
+          struct Entry { int64_t key; int kk; };
+          vector<Entry> entries;
+          const int n_row_no_wings = duplicate_sparse_mat[j].size();
+          for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk)
+            {
+              const int l=colIdx[kk];
+              if ( l<col_start ) continue; else if ( l>=col_end ) break;
+              const bool used =
+                alpha_columns_per_sm[i/warps_per_sm].contains(l);
+              const int64_t priority = l >= row_start && l < row_end
+                ? m+2 : used ? m + 1 : col_n_uses[l-col_start];
+              const int64_t key = priority * m + m - l;
+              entries.emplace_back( key, kk );
+            }
+
+          const int size_limit = max( n_row_no_wings, nnz_row_limit );
+
+          if ( entries.size() > size_limit )
+            {
+              ranges::sort(entries,ranges::greater(),&Entry::key);
+              entries.resize(size_limit);
+              ranges::sort(entries,ranges::less(),&Entry::kk);
+            }
+
+          // visit each col_panel
             int entries_in_row = 0;
             alpha_rowPtr.push_back(nnz_rowPtr);
-            
-            for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){  
-                int l=colIdx[kk];
-                if (l<col_start){
-                    continue;
-                }
-                if (l>=col_end){
-                    break;
-                }
-                
+
+            for ( auto [ _, kk ]: entries ) {
+
+              const int l = colIdx[kk];
+
                 // duplicate_sparse_mat contains the diagonal tiles after the first round
                 // if col_idx l exists in the diagonal tile of the current row pillar, OR
                 // if col_idx l exists in the diagonal tiles residing on the same SM
@@ -1217,22 +1278,20 @@ int Mat::csr2seg_Cmajor(int ridx, unordered_map<int,unordered_set<int>> &duplica
         for ( int i=rowStart; i<rowEnd; ++i ){ 
             // absolute position of the nze in csr, idx = base + offset
             int c = rowPtr[i] + cOffset[i-rowStart];
-            if (duplicate_sparse_mat[i].find(colIdx[c])!=duplicate_sparse_mat[i].end()){ 
-                cOffset[i-rowStart]++;
-                continue;
-            }
-            if ( colIdx[c]==j && c<rowPtr[i+1] ){
-                duplicate_sparse_mat[i].insert(j); // mark it as visited, but not necessary in the third round
-                
-                segcv[i-rowStart].push_back({j,vals[c]}); 
-                cOffset[i-rowStart]++;
-                atom[i-rowStart]++;
-                nnzInSeg++;
-
-            }
+            if ( c >= rowPtr[i+1] ) continue;
+            const int col = colIdx[c];
+            assert( col >= j );
+            if ( col != j ) continue;
+            cOffset[i-rowStart]++;
+            if ( duplicate_sparse_mat[i].contains(j) ) continue;
+            duplicate_sparse_mat[i].insert(j); // mark it as visited, but not necessary in the third round
+            segcv[i-rowStart].push_back({j,vals[c]}); 
+            atom[i-rowStart]++;
+            nnzInSeg++;
         }
         //if (ridx==73) printf("j = %d, last_col = %d, nnzInSeg = %zu\n",j,last_col,nnzInSeg);
-        if ( (j==last_col && nnzInSeg) || (nnz_limit - nnzInSeg)<=dif || nnzInSeg>nnz_limit ){
+        if ( j==last_col && nnzInSeg
+             || (nnz_limit - nnzInSeg) <= dif || nnzInSeg>nnz_limit ){
         
             nnz_rowPtr += nnzInSeg;
             for ( int i=0; i<rowEnd-rowStart; ++i ){
