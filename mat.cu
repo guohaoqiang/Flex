@@ -1,8 +1,40 @@
 #include "mat.cuh"
 #include <bit>
 #include <ranges>
+#include <algorithm>
+#include <fstream>
+#include <mutex>
+#include "flex_model_enhanced.h"
+
+/* Enable model-based decision for assigning non-zeros to flex tiles.
+ * Define FLEX_MODEL_DECISION to activate a lightweight cost model that
+ * compares an estimated cost of keeping a non-zero in an alpha (flex)
+ * tile vs. placing it in the balancing work queue.
+ */
+#define FLEX_MODEL_DECISION
+#define FLEX_MODEL_ENHANCED
+
+// Global logging for model predictions
+static std::ofstream model_log;
+static std::mutex model_log_mutex;
+static bool model_log_initialized = false;
 
 __constant__ Mat_POD mat_dev;
+
+// Initialize model logging
+inline void init_model_log() {
+    if (!model_log_initialized) {
+        std::lock_guard<std::mutex> lock(model_log_mutex);
+        if (!model_log_initialized) {
+            model_log.open("model_predictions.csv", std::ios::app);
+            if (model_log.is_open()) {
+                model_log << "row_idx,col_idx,col_reuse,tile_rows,need_atomic,flex_cost,work_cost,chosen\n";
+                model_log.flush();
+            }
+            model_log_initialized = true;
+        }
+    }
+}
 
 Mat::Mat(DataLoader& input, int tileh,int tilew)
          :dl(input),rowPtr(input.rowPtr),colIdx(input.col),vals(input.vals),voMp(input.vo_mp){
@@ -690,11 +722,36 @@ void Mat::csr2_DiagTiling(){
     float alpha = 0.3;
     /*create tiles along the diagonal band (lower & upper diagnonal)*/ 
 
+    assert( nnz == rowPtr[m] );
+
     // I assume 30 percent of nz/weights will be covered in diagonal tiles
     const int nnz_diagonal_tiles = alpha * rowPtr[m]; 
     bool tuning = false;
     const int partitions_node = warps_per_sm * n_sm; // partitions along the width
     const int nnz_p_diagonal_tile  = max(32,nnz_diagonal_tiles / partitions_node); 
+    
+    const int nnz_row = nnz / m;
+    
+    const float static_assign_frac_max = 0.5;
+    //
+    // Lower values provide more workload balance but less potential for
+    // exploiting reuse.
+    //
+    // Special cases:
+    //   static_assign_frac_max = 0;  // No wing non-zeros.
+    //   static_assign_frac_max = 1;  // Perfect balance possible but unlikely.
+    //   static_assign_frac_max = m;  // Add all nz used by a tile in sm.
+
+
+    const int nnz_row_limit = static_assign_frac_max * nnz_row;
+    //
+    // Note: The number of nz handled by a row in a static tile will
+    // be max( nnz_row_limit, pre_wing_tile_size ), where
+    // pre_wing_tile_size is the tile size before wing non-zeros were
+    // added.
+
+    const int tile_rows_max = 2 * m / partitions_node;
+
     if (tuning) printf("nnz_diagonal_tiles = %d, nnz_p_diagonal_tile = %d\n",nnz_diagonal_tiles,nnz_p_diagonal_tile);
     vector<int> tile_width(partitions_node,0);
 
@@ -713,9 +770,10 @@ void Mat::csr2_DiagTiling(){
         // These SMs can process the last bucket directly
         int nnz_current_diag_tile = 0;
         int j = mat_r_start;
-            
+        const int j_limit = min( m, j + tile_rows_max );  
+
 #ifdef NON_UNIFORM_TILE
-        while (j<m && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
+        while (j<j_limit && nnz_current_diag_tile<=(int)(0.85*nnz_p_diagonal_tile)){
 #else
         int tile_boundary = (i==(partitions_node-1)) ? m : (mat_r_start + m/partitions_node); 
         while (j<tile_boundary){
@@ -791,36 +849,88 @@ void Mat::csr2_DiagTiling(){
             col_end = row_end;
 #endif
 
+        vector<int> col_n_uses(col_end-col_start,0);
+        for (int j=row_start; j<row_end; ++j)
+          {
+            for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){
+                const int l=colIdx[kk];
+                if (l<col_start) continue;
+                if (l>=col_end) break;
+                col_n_uses[l-col_start]++;
+            }
+          }
+
         for (int j=row_start; j<row_end; ++j){
+          // Choose the columns in the original tile plus wing columns
+          // with the highest re-use.
+          //
+          struct Entry { int64_t key; int kk; };
+          vector<Entry> entries;
+          const int n_row_no_wings = duplicate_sparse_mat[j].size();
+          for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk)
+            {
+              const int l=colIdx[kk];
+              if ( l<col_start ) continue; else if ( l>=col_end ) break;
+              const bool used =
+                alpha_columns_per_sm[i/warps_per_sm].contains(l);
+              const int64_t priority = l >= row_start && l < row_end
+                ? m+2 : used ? m + 1 : col_n_uses[l-col_start];
+              const int64_t key = priority * m + m - l;
+              entries.emplace_back( key, kk );
+            }
+
+          const int size_limit = max( n_row_no_wings, nnz_row_limit );
+
+          if ( entries.size() > size_limit )
+            {
+              ranges::sort(entries,ranges::greater(),&Entry::key);
+              entries.resize(size_limit);
+              ranges::sort(entries,ranges::less(),&Entry::kk);
+            }
+            
             // visit each col_panel
             int entries_in_row = 0;
             alpha_rowPtr.push_back(nnz_rowPtr);
             
-            for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){  
-                int l=colIdx[kk];
-                if (l<col_start){
-                    continue;
-                }
-                if (l>=col_end){
-                    break;
-                }
+             for ( auto [ _, kk ]: entries ) {  
+                
+                const int l=colIdx[kk];
                 
                 // duplicate_sparse_mat contains the diagonal tiles after the first round
                 // if col_idx l exists in the diagonal tile of the current row pillar, OR
                 // if col_idx l exists in the diagonal tiles residing on the same SM
 
-                if ( duplicate_sparse_mat[j].contains(l)
-                    || alpha_columns_per_sm[i/warps_per_sm].contains(l) )
-                  {
-                    //printf("r = %d, c = %d, val[%d] = %f\n",j,l,k,vals[k]);
-
-                    duplicate_sparse_mat[j].insert(l); // mark it as visited
-
-                    assert( alpha_columns_per_sm[i/warps_per_sm].contains(l) );
-                    // DMK: Is the commented out line below needed?
-                    // Haoqiang: No, it is not necessary since the first round has marked all columns residing in an SM
-                    //  alpha_columns_per_sm[i/warps_per_sm].insert(l);
-
+                bool force_alpha = duplicate_sparse_mat[j].contains(l) || alpha_columns_per_sm[i/warps_per_sm].contains(l);
+#ifdef FLEX_MODEL_DECISION
+                if (!force_alpha) {
+                    int u = col_n_uses[l - col_start];
+                    int total_rows_in_tile = row_end - row_start;
+                    bool need_atomic_est = (entries_in_row > 0 && entries_in_row < (rowPtr[j+1]-rowPtr[j]));
+                    
+                    // Enhanced model decision (incorporating vectorization and L1 reuse)
+                    #ifdef FLEX_MODEL_ENHANCED
+                        int kernel_version = 39;  // Default: v39 (float2 vectorization)
+                        double flex_cost = compute_flex_cost_enhanced(
+                            1,  // Cost per non-zero
+                            u,  // Column reuse count
+                            need_atomic_est,
+                            kernel_version,
+                            total_rows_in_tile);
+                        double work_cost = compute_work_cost(1, need_atomic_est);
+                    #else
+                        // Fallback to original baseline model
+                        const double C_HBM = 1.0;
+                        const double C_L2 = 0.05;
+                        const double C_ATOMIC = 50.0;
+                        const double C_COMP = 0.5;
+                        double flex_cost = C_HBM / (double)std::max(1, u) + C_L2 * (1.0 - (double)std::min(u, total_rows_in_tile) / (double)total_rows_in_tile) + C_COMP;
+                        if (need_atomic_est) flex_cost += C_ATOMIC;
+                        double work_cost = C_HBM + C_ATOMIC + C_COMP;
+                    #endif
+                }
+#endif
+                if (force_alpha) {
+                    duplicate_sparse_mat[j].insert(l);
                     alpha_colIdx.push_back(l);
                     alpha_vals.push_back(vals[kk]);
                     entries_in_row++;

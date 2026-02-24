@@ -52,6 +52,9 @@ void lds32(float &reg, const uint32_t &addr) {
     );
 }
 
+// ATOMIC MEASUREMENT COUNTER - External declaration, defined in flex.cu
+extern __device__ unsigned long long g_atomic_count;
+
 // inputs:
 //		 block_tileStart_idx: the tile idex of the first tile computed by thread-blocks
 //       tileColIdx: the column idex of the first column of each tile
@@ -566,6 +569,7 @@ void flexspgemm_cuda_reg_pre_v1(int* tileNnz,
                 if (row_flag[1] & (1<<j)){
 			//for (uint32_t j=0; j<TM && (row_flag[1] & (1<<j))!=0; ++j){
 				    atomicAdd(&c_mat_sh[j*k+lane_id], res[j]);
+				    atomicAdd(&g_atomic_count, 1ULL);
                 /*
                 if (blockIdx.x==5 && warp_id==1 && lane_id==0){
                     printf("@508: c_mat_h[%d] = %f\n",j*32+lane_id,c_mat_sh[j*k+lane_id]);
@@ -584,6 +588,7 @@ void flexspgemm_cuda_reg_pre_v1(int* tileNnz,
 			for (uint32_t i=0; i<16 && (row_flag[1] & (1<<i)); ++i){
 				uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 				atomicAdd(&mat_c[r*k+lane_offset], res[i]);
+			atomicAdd(&g_atomic_count, 1ULL);
 			}
 		}
         //printf("Not acc in shared mem\n");	
@@ -604,6 +609,7 @@ void flexspgemm_cuda_reg_pre_v1(int* tileNnz,
                     if (row_flag[1] & (1<<i)){
 					    uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 					    atomicAdd(&mat_c[r*k+lane_offset], c_mat_sh[i*32+lane_id]);
+					atomicAdd(&g_atomic_count, 1ULL);
                         /*
                         if (blockIdx.x==4 && warp_id==0 && lane_id==0){
                             // printf("@547: c_sh[%d] = %f, mat_c[%d] = %f\n", i*32+lane_id, c_mat_sh[i*32+lane_id], r*k+lane_offset, mat_c[r*k+lane_offset]);
@@ -634,6 +640,7 @@ void flexspgemm_cuda_reg_pre_v1(int* tileNnz,
 					uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 					mat_c[r*k+lane_offset] = c_mat_sh[i*32+lane_id];
 					//atomicAdd(&mat_c[r*k+lane_offset], c_mat_sh[i*32+lane_id]);
+					atomicAdd(&g_atomic_count, 1ULL);
                     //printf("r = %d, c = %d, val = %f\n",r,lane_offset,mat_c[r*k+lane_offset]);
 				}
                 //printf("Acc2 in shared mem\n");	
@@ -961,6 +968,7 @@ void flexspgemm_cuda_reg_pre_v2(int* tileNnz,
 			for (uint32_t i=0; i<16 && (row_flag[1] & (1<<i)); ++i){
 				uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 				atomicAdd(&mat_c[r*k+lane_offset], res[i]);
+			atomicAdd(&g_atomic_count, 1ULL);
 			}
 		}
         //printf("Not acc in shared mem\n");	
@@ -979,6 +987,7 @@ void flexspgemm_cuda_reg_pre_v2(int* tileNnz,
                     if (row_flag[1] & (1<<i)){
 					    uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 					    atomicAdd(&mat_c[r*k+lane_offset], c_mat_sh[i*32+lane_id]);
+					atomicAdd(&g_atomic_count, 1ULL);
                         
                         //if (blockIdx.x==4 && warp_id==0 && lane_id==0){
                             // printf("@547: c_sh[%d] = %f, mat_c[%d] = %f\n", i*32+lane_id, c_mat_sh[i*32+lane_id], r*k+lane_offset, mat_c[r*k+lane_offset]);
@@ -1008,6 +1017,7 @@ void flexspgemm_cuda_reg_pre_v2(int* tileNnz,
 					uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 					mat_c[r*k+lane_offset] = c_mat_sh[i*32+lane_id];
 					//atomicAdd(&mat_c[r*k+lane_offset], c_mat_sh[i*32+lane_id]);
+					atomicAdd(&g_atomic_count, 1ULL);
                     //printf("r = %d, c = %d, val = %f\n",r,lane_offset,mat_c[r*k+lane_offset]);
 				}
                 //printf("Acc2 in shared mem\n");	
@@ -1199,6 +1209,7 @@ void flexspgemm_cuda_wo_pre_v3(int* tileNnz,
                     if (c_row_flag & (1<<i)){
 					    uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 					    atomicAdd(&mat_c[r*k+lane_offset], c_mat_sh[i*32+lane_id]);
+					atomicAdd(&g_atomic_count, 1ULL);
                         
                         //if (blockIdx.x==4 && warp_id==0 && lane_id==0){
                             // printf("@547: c_sh[%d] = %f, mat_c[%d] = %f\n", i*32+lane_id, c_mat_sh[i*32+lane_id], r*k+lane_offset, mat_c[r*k+lane_offset]);
@@ -1240,6 +1251,7 @@ void flexspgemm_cuda_wo_pre_v3(int* tileNnz,
 				if (c_row_flag & (1<<i)){
                     uint32_t r = warp_tileRow_idx[blockIdx.x] + i;
 				    atomicAdd(&mat_c[r*k+lane_offset], res[i]);
+			atomicAdd(&g_atomic_count, 1ULL);
                         
                     //if (blockIdx.x==0 && warp_id==0 &&  lane_id==0){
                     //    printf("@1241: r = %d, val = %f\n", r, res[i]);

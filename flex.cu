@@ -1,5 +1,6 @@
 #include "flex.cuh"
 #include <ranges>
+
 #include <set>
 /*
 __device__ __forceinline__
@@ -1325,9 +1326,13 @@ void flexspmm_cuda_w_vec4_v11(){
                     int addr = actual_row*md.k;
                     if ( atomicORnot>>31 ){
                         atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 0 ], res[c][0]);
+                        
                         atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 1 ], res[c][1]);
+                        
                         atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 2 ], res[c][2]);
+                       
                         atomicAdd( &md.mat_c_dev[ addr + c_col*4 + 3 ], res[c][3]);
+                        
                     }else{
                         float* mat_c = &md.mat_c_dev[ addr ];
                         float4 vect4_c = {res[c][0], res[c][1], res[c][2], res[c][3]}; 
@@ -4123,6 +4128,458 @@ void alpha_w_atomic_spmm_v36(){
         timing_end();
 }
 
+template<int tm, int CF, int warps>
+__global__
+void alpha_w_atomic_spmm_v37(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();
+    const int wp_id = threadIdx.x / 32; // threadIdx.x >> 5;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    const int row_id = lane_id>>3; // 8 threads process a row
+    const int c_col = lane_id & 0x7; 
+
+    __shared__ int pillar_idx[2]; // two warps per block
+    
+    int fetch_row_id;
+    int nsi = sm_id;
+
+    // alpha_pillarIdx_dev contains pillar start index for each SM, with length #SM + 1
+    int head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+    const int tail_pillar_idx = md.alpha_pillarIdx_dev[nsi+1];   // the begin pillar index of the (nsi+1)-th SM
+    
+    while ( true ) {
+        
+        // counter_dev is pillar idx_offset within each SM, with length #SM + 1  (initialized to 0)
+        int pillar_idx_0 = lane_id ? 0 : atomicAdd( &md.counter_dev[ nsi ], 1 );
+        __syncwarp();
+        if ( lane_id == 0 ) pillar_idx[ wp_id ] = pillar_idx_0 + head_pillar_idx;
+        __syncwarp();
+
+        int work_pillar_idx = pillar_idx[ wp_id ];      // the index of the row pillar to work on by the current warp
+        // if the work pillar is beyond the tail segment, row pillars within the SM are exhausted. The current warp
+        // will switch to work on row pillars belonging to the workload balance.
+        if ( nsi < md.sms && work_pillar_idx >= tail_pillar_idx ) { 
+            nsi = md.sms; 
+            head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+            continue; 
+        }
+        // if the work pillar is beyond the last segment, all row pillars are exhausted.
+        if ( nsi == md.sms && work_pillar_idx >= md.n_segs ) break;
+
+        int row_start = md.alpha_pillar_rowPtr_dev[work_pillar_idx];           // the first row of the row pillar
+        int row_end = md.alpha_pillar_rowPtr_dev[work_pillar_idx+1];          // the first row of the next row pillar
+        
+        // visit all rows of the row pillar
+        // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
+        // As such, the incremental is 4
+        for ( int r_lane_0 = row_start; r_lane_0<row_end; r_lane_0 += 4 ){
+
+          // DMK: Because of warp-wide fetch_row_id, need to have all threads active.
+          const int r_idx = r_lane_0 + row_id;
+          const bool have_work = r_idx < row_end;
+
+            // each thread fetch a gold row id
+            //                        iteration0        iteration1      iteration2         iteration3         ...      iteration8
+            // for subwarp 0, r_idx = row_start,        row_start + 4,  row_start + 8,     row_start + 12     ...      row_start + 32
+            // for subwarp 1, r_idx = row_start + 1,    row_start + 5,  row_start + 9,     row_start + 13     ...      row_start + 33
+            // for subwarp 2, r_idx = row_start + 2,    row_start + 6,  row_start + 10,    row_start + 14     ...      row_start + 34
+            // for subwarp 3, r_idx = row_start + 3,    row_start + 7,  row_start + 11,    row_start + 15     ...      row_start + 35
+            if ( (r_idx-row_start)%32 == row_id ){
+                // a subwarp performs the fecth once every 8 iterations
+                //                   iteration0         iteration1      iteration2         iteration8
+                // subwarp 0       0,4,8,12,...,28                                         32,36,40,...
+                // subwarp 1       1,5,9,13,...,29                                         33,37,41,...   
+                // subwarp 2       2,6,10,14,...,30                                        34,38,42,... 
+                // subwarp 3       3,7,11,15,...,31                                        35,39,43,...
+                if ( (r_idx + c_col*4) < row_end){
+                    fetch_row_id = md.segVoMap_dev[r_idx + c_col*4];
+                }  
+            }
+            int cur_rowPtr = have_work ? md.alpha_rowPtr_dev[ r_idx ] : 0;
+            int nnz_cur_row =
+              have_work ? md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr : 0;
+            
+            // broadcast within a subwarp, each subwarp has 8 threads                    
+            // it0, 0 broadcast v to 0,1,...7   ,  8 broadcast v to 8,9,..15   ,   16 broadcast v to 16,17,..23   ,  24 broadcast v to 24,25,..31 
+            // it1, 1 broadcast v to 0,1,...7   ,  9 broadcast v to 8,9,..15   ,   17 broadcast v to 16,17,..23   ,  25 broadcast v to 24,25,..31
+            // it2, 2 broadcast v to 0,1,...7   ,  10 broadcast v to 8,9,..15   ,   18 broadcast v to 16,17,..23   ,  26 broadcast v to 24,25,..31
+            // it3, 3 broadcast v to 0,1,...7   ,  11 broadcast v to 8,9,..15   ,   19 broadcast v to 16,17,..23   ,  27 broadcast v to 24,25,..31
+            int gold_row_id = __shfl_sync(~0, fetch_row_id, (r_idx-row_start)/4%8, 8);
+            int actual_row = gold_row_id & 0x7fffffff;
+            int atomicORnot = gold_row_id & (1<<31); // get MSB
+            int addr = actual_row*md.k;
+            
+            // 8 threads process a C row
+            for ( int cc = c_col; cc<md.k/2; cc+=8 ){ 
+                float2 res = make_float2(0.0,0.0);
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                    
+                   // column & val 
+                   int weight_c = md.alpha_colIdx_dev[ cur_rowPtr + z ];
+                   float weight_v = md.alpha_vals_dev[ cur_rowPtr + z ];
+                   
+                //    float bv = md.shadow_b_dev[ weight_c*md.k + cc ];
+                //    res += weight_v * bv;
+
+                   float *shadow_b_addr = &md.shadow_b_dev[ weight_c * md.k ];
+                   float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ cc ];
+                   res.x += weight_v * b_vec.x;
+                   res.y += weight_v * b_vec.y;
+                }    
+                // store results back  
+                if ( have_work && actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        
+                        atomicAdd( &md.mat_c_dev[ addr + cc*2 ], res.x);
+                        atomicAdd( &md.mat_c_dev[ addr + cc*2 + 1], res.y);
+                    }else{
+                        
+                        md.mat_c_dev[ addr + cc*2 ] = res.x;
+                        md.mat_c_dev[ addr + cc*2 + 1] = res.y;
+                    }
+                    
+                }
+            }
+            
+        } // end tile-seg row loop
+       
+    } // end tile-segs loops
+        timing_end();
+}
+template<int tm, int CF, int warps>
+__global__
+void alpha_w_atomic_spmm_v38(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();
+    const int wp_id = threadIdx.x / 32; // threadIdx.x >> 5;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    const int row_id = 0; // 32 threads process a row
+    const int c_col = lane_id; 
+
+    __shared__ int pillar_idx[2]; // two warps per block
+    
+    int fetch_row_id;
+    int nsi = sm_id;
+
+    // alpha_pillarIdx_dev contains pillar start index for each SM, with length #SM + 1
+    int head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+    const int tail_pillar_idx = md.alpha_pillarIdx_dev[nsi+1];   // the begin pillar index of the (nsi+1)-th SM
+    
+    while ( true ) {
+        
+        // counter_dev is pillar idx_offset within each SM, with length #SM + 1  (initialized to 0)
+        int pillar_idx_0 = lane_id ? 0 : atomicAdd( &md.counter_dev[ nsi ], 1 );
+        __syncwarp();
+        if ( lane_id == 0 ) pillar_idx[ wp_id ] = pillar_idx_0 + head_pillar_idx;
+        __syncwarp();
+
+        int work_pillar_idx = pillar_idx[ wp_id ];      // the index of the row pillar to work on by the current warp
+        // if the work pillar is beyond the tail segment, row pillars within the SM are exhausted. The current warp
+        // will switch to work on row pillars belonging to the workload balance.
+        if ( nsi < md.sms && work_pillar_idx >= tail_pillar_idx ) { 
+            nsi = md.sms; 
+            head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+            continue; 
+        }
+        // if the work pillar is beyond the last segment, all row pillars are exhausted.
+        if ( nsi == md.sms && work_pillar_idx >= md.n_segs ) break;
+
+        int row_start = md.alpha_pillar_rowPtr_dev[work_pillar_idx];           // the first row of the row pillar
+        int row_end = md.alpha_pillar_rowPtr_dev[work_pillar_idx+1];          // the first row of the next row pillar
+        
+        // visit all rows of the row pillar
+        // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
+        // As such, the incremental is 4
+        for ( int r_lane_0 = row_start; r_lane_0<row_end; r_lane_0 += 1 ){
+
+          // DMK: Because of warp-wide fetch_row_id, need to have all threads active.
+          const int r_idx = r_lane_0 + row_id;
+          const bool have_work = r_idx < row_end;
+
+            if ( (r_idx-row_start)%32 == row_id ){
+                if ( (r_idx + c_col) < row_end){
+                    fetch_row_id = md.segVoMap_dev[r_idx + c_col];
+                }  
+            }
+            int cur_rowPtr = have_work ? md.alpha_rowPtr_dev[ r_idx ] : 0;
+            int nnz_cur_row =
+              have_work ? md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr : 0;
+            
+            // broadcast within a subwarp, each subwarp has 8 threads                    
+            // it0, 0 broadcast v to 0,1,...,24,25,..31 
+            // it1, 1 broadcast v to 0,1,...,24,25,..31
+            // it2, 2 broadcast v to 0,1,...,24,25,..31
+            // it3, 3 broadcast v to 0,1,...,24,25,..31
+            int gold_row_id = __shfl_sync(~0, fetch_row_id, (r_idx-row_start)%32);
+            int actual_row = gold_row_id & 0x7fffffff;
+            int atomicORnot = gold_row_id & (1<<31); // get MSB
+            int addr = actual_row*md.k;
+            
+            // 32 threads process a C row
+            for ( int cc = c_col; cc<md.k; cc+=32 ){ 
+                float res = 0.0;
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                    
+                   // column & val 
+                   int weight_c = md.alpha_colIdx_dev[ cur_rowPtr + z ];
+                   float weight_v = md.alpha_vals_dev[ cur_rowPtr + z ];
+                   
+                   float bv = md.shadow_b_dev[ weight_c*md.k + cc ];
+                   res += weight_v * bv;
+
+                }    
+                // store results back  
+                if ( have_work && actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc ], res);
+                    }else{
+                        md.mat_c_dev[ addr + cc ] = res;
+                    }
+                    
+                }
+            }
+            
+        } // end tile-seg row loop
+       
+    } // end tile-segs loops
+        timing_end();
+}
+
+template<int tm, int CF, int warps>
+__global__
+void alpha_w_atomic_spmm_v39(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();
+    const int wp_id = threadIdx.x / 32; // threadIdx.x >> 5;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    const int row_id = 0; // 32 threads process a row
+    const int c_col = lane_id; 
+
+    __shared__ int pillar_idx[2]; // two warps per block
+    
+    int fetch_row_id;
+    int nsi = sm_id;
+
+    // alpha_pillarIdx_dev contains pillar start index for each SM, with length #SM + 1
+    int head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+    const int tail_pillar_idx = md.alpha_pillarIdx_dev[nsi+1];   // the begin pillar index of the (nsi+1)-th SM
+    
+    while ( true ) {
+        
+        // counter_dev is pillar idx_offset within each SM, with length #SM + 1  (initialized to 0)
+        int pillar_idx_0 = lane_id ? 0 : atomicAdd( &md.counter_dev[ nsi ], 1 );
+        __syncwarp();
+        if ( lane_id == 0 ) pillar_idx[ wp_id ] = pillar_idx_0 + head_pillar_idx;
+        __syncwarp();
+
+        int work_pillar_idx = pillar_idx[ wp_id ];      // the index of the row pillar to work on by the current warp
+        // if the work pillar is beyond the tail segment, row pillars within the SM are exhausted. The current warp
+        // will switch to work on row pillars belonging to the workload balance.
+        if ( nsi < md.sms && work_pillar_idx >= tail_pillar_idx ) { 
+            nsi = md.sms; 
+            head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+            continue; 
+        }
+        // if the work pillar is beyond the last segment, all row pillars are exhausted.
+        if ( nsi == md.sms && work_pillar_idx >= md.n_segs ) break;
+
+        int row_start = md.alpha_pillar_rowPtr_dev[work_pillar_idx];           // the first row of the row pillar
+        int row_end = md.alpha_pillar_rowPtr_dev[work_pillar_idx+1];          // the first row of the next row pillar
+        
+        // visit all rows of the row pillar
+        // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
+        // As such, the incremental is 4
+        for ( int r_lane_0 = row_start; r_lane_0<row_end; r_lane_0 += 1 ){
+
+          // DMK: Because of warp-wide fetch_row_id, need to have all threads active.
+          const int r_idx = r_lane_0 + row_id;
+          const bool have_work = r_idx < row_end;
+
+            if ( (r_idx-row_start)%32 == row_id ){
+                if ( (r_idx + c_col) < row_end){
+                    fetch_row_id = md.segVoMap_dev[r_idx + c_col];
+                }  
+            }
+            int cur_rowPtr = have_work ? md.alpha_rowPtr_dev[ r_idx ] : 0;
+            int nnz_cur_row =
+              have_work ? md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr : 0;
+            
+            // broadcast within a subwarp, each subwarp has 8 threads                    
+            // it0, 0 broadcast v to 0,1,...,24,25,..31 
+            // it1, 1 broadcast v to 0,1,...,24,25,..31
+            // it2, 2 broadcast v to 0,1,...,24,25,..31
+            // it3, 3 broadcast v to 0,1,...,24,25,..31
+            int gold_row_id = __shfl_sync(~0, fetch_row_id, (r_idx-row_start)%32);
+            int actual_row = gold_row_id & 0x7fffffff;
+            int atomicORnot = gold_row_id & (1<<31); // get MSB
+            int addr = actual_row*md.k;
+            
+            // 32 threads process a C row
+            for ( int cc = c_col; cc<md.k/2; cc+=32 ){ 
+                float2 res = make_float2(0.0,0.0);
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                    
+                   // column & val 
+                   int weight_c = md.alpha_colIdx_dev[ cur_rowPtr + z ];
+                   float weight_v = md.alpha_vals_dev[ cur_rowPtr + z ];
+                   
+                //    float bv = md.shadow_b_dev[ weight_c*md.k + cc ];
+                //    res += weight_v * bv;
+                
+                   float *shadow_b_addr = &md.shadow_b_dev[ weight_c * md.k ];
+                   float2 b_vec = reinterpret_cast<float2*>(shadow_b_addr)[ cc ];
+                   res.x += weight_v * b_vec.x;
+                   res.y += weight_v * b_vec.y;
+                }    
+                // store results back  
+                if ( have_work && actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc*2 ], res.x);
+                        atomicAdd( &md.mat_c_dev[ addr + cc*2 + 1 ], res.y);
+                    }else{
+                        md.mat_c_dev[ addr + cc*2 ] = res.x;
+                        md.mat_c_dev[ addr + cc*2 + 1 ] = res.y;
+                    }
+                    
+                }
+            }
+            
+        } // end tile-seg row loop
+       
+    } // end tile-segs loops
+        timing_end();
+}
+
+template<int tm, int CF, int warps>
+__global__
+void alpha_w_atomic_spmm_v40(){ 
+    // requires preprocess dense mat B
+
+    timing_start(); 
+    
+    const Mat_POD& md = mat_dev;
+    uint32_t sm_id = smid_get();
+    const int wp_id = threadIdx.x / 32; // threadIdx.x >> 5;
+    const int lane_id = threadIdx.x & 0x1f; //threadIdx.x % 32;
+    const int row_id = 0; // 32 threads process a row
+    const int c_col = lane_id; 
+
+    __shared__ int pillar_idx[2]; // two warps per block
+    
+    int fetch_row_id;
+    int nsi = sm_id;
+
+    // alpha_pillarIdx_dev contains pillar start index for each SM, with length #SM + 1
+    int head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+    const int tail_pillar_idx = md.alpha_pillarIdx_dev[nsi+1];   // the begin pillar index of the (nsi+1)-th SM
+    
+    while ( true ) {
+        
+        // counter_dev is pillar idx_offset within each SM, with length #SM + 1  (initialized to 0)
+        int pillar_idx_0 = lane_id ? 0 : atomicAdd( &md.counter_dev[ nsi ], 1 );
+        __syncwarp();
+        if ( lane_id == 0 ) pillar_idx[ wp_id ] = pillar_idx_0 + head_pillar_idx;
+        __syncwarp();
+
+        int work_pillar_idx = pillar_idx[ wp_id ];      // the index of the row pillar to work on by the current warp
+        // if the work pillar is beyond the tail segment, row pillars within the SM are exhausted. The current warp
+        // will switch to work on row pillars belonging to the workload balance.
+        if ( nsi < md.sms && work_pillar_idx >= tail_pillar_idx ) { 
+            nsi = md.sms; 
+            head_pillar_idx = md.alpha_pillarIdx_dev[nsi];      // the begin pillar index of the nsi-th SM
+            continue; 
+        }
+        // if the work pillar is beyond the last segment, all row pillars are exhausted.
+        if ( nsi == md.sms && work_pillar_idx >= md.n_segs ) break;
+
+        int row_start = md.alpha_pillar_rowPtr_dev[work_pillar_idx];           // the first row of the row pillar
+        int row_end = md.alpha_pillar_rowPtr_dev[work_pillar_idx+1];          // the first row of the next row pillar
+        
+        // visit all rows of the row pillar
+        // 8 threads process a row, thus a warp process 4 rows. row_id \in [0,1,2,3]
+        // As such, the incremental is 4
+        for ( int r_lane_0 = row_start; r_lane_0<row_end; r_lane_0 += 1 ){
+
+          // DMK: Because of warp-wide fetch_row_id, need to have all threads active.
+          const int r_idx = r_lane_0 + row_id;
+          const bool have_work = r_idx < row_end;
+
+            if ( (r_idx-row_start)%32 == row_id ){
+                if ( (r_idx + c_col) < row_end){
+                    fetch_row_id = md.segVoMap_dev[r_idx + c_col];
+                }  
+            }
+            int cur_rowPtr = have_work ? md.alpha_rowPtr_dev[ r_idx ] : 0;
+            int nnz_cur_row =
+              have_work ? md.alpha_rowPtr_dev[ r_idx + 1 ] - cur_rowPtr : 0;
+            
+            // broadcast within a subwarp, each subwarp has 8 threads                    
+            // it0, 0 broadcast v to 0,1,...,24,25,..31 
+            // it1, 1 broadcast v to 0,1,...,24,25,..31
+            // it2, 2 broadcast v to 0,1,...,24,25,..31
+            // it3, 3 broadcast v to 0,1,...,24,25,..31
+            int gold_row_id = __shfl_sync(~0, fetch_row_id, (r_idx-row_start)%32);
+            int actual_row = gold_row_id & 0x7fffffff;
+            int atomicORnot = gold_row_id & (1<<31); // get MSB
+            int addr = actual_row*md.k;
+            
+            // 32 threads process a C row
+            for ( int cc = c_col; cc<md.k/4; cc+=32 ){ 
+                float4 res = make_float4(0.0, 0.0, 0.0, 0.0);
+                for ( int z=0; z<nnz_cur_row; z += 1 ){ // over non-zeros of the row
+                    
+                   // column & val 
+                   int weight_c = md.alpha_colIdx_dev[ cur_rowPtr + z ];
+                   float weight_v = md.alpha_vals_dev[ cur_rowPtr + z ];
+                   
+                //    float bv = md.shadow_b_dev[ weight_c*md.k + cc ];
+                //    res += weight_v * bv;
+                
+                   float *shadow_b_addr = &md.shadow_b_dev[ weight_c * md.k ];
+                   float4 b_vec = reinterpret_cast<float4*>(shadow_b_addr)[ cc ];
+                   res.x += weight_v * b_vec.x;
+                   res.y += weight_v * b_vec.y;
+                   res.z += weight_v * b_vec.z;
+                   res.w += weight_v * b_vec.w;
+                }    
+                // store results back  
+                if ( have_work && actual_row<md.m ){
+                    
+                    if ( atomicORnot>>31 ){
+                        atomicAdd( &md.mat_c_dev[ addr + cc*4 ], res.x);
+                        atomicAdd( &md.mat_c_dev[ addr + cc*4 + 1 ], res.y);
+                        atomicAdd( &md.mat_c_dev[ addr + cc*4 + 2 ], res.z);
+                        atomicAdd( &md.mat_c_dev[ addr + cc*4 + 3 ], res.w);
+                    }else{
+                        md.mat_c_dev[ addr + cc*4 ] = res.x;
+                        md.mat_c_dev[ addr + cc*4 + 1 ] = res.y;
+                        md.mat_c_dev[ addr + cc*4 + 2 ] = res.z;
+                        md.mat_c_dev[ addr + cc*4 + 3 ] = res.w;
+                    }
+                    
+                }
+            }
+            
+        } // end tile-seg row loop
+       
+    } // end tile-segs loops
+        timing_end();
+}
 
 GPU_Info
 print_gpu_and_kernel_info()
@@ -4343,8 +4800,8 @@ void run_ge_spmm(DataLoader& input_vo){
     #define PUSH_KERNEL(kb,k) \
     {  kernels.emplace_back(info.GET_INFO((k)),#kb); }
 
-#define LESS32 // for k in (0,32)
-//#define LESS64 // for k in [32,64)
+//#define LESS32 // for k in (0,32)
+#define LESS64 // for k in [32,64)
 //#define GRE64 // for k>=64
 
 #ifdef LESS32
@@ -4370,7 +4827,7 @@ void run_ge_spmm(DataLoader& input_vo){
     //float* gespmm_c;
     //cudaMalloc(&gespmm_c, input_vo.gpuC_bytes);
     //cudaMemset(gespmm_c, 0, input_vo.gpuC_bytes);
-    if (input_vo.dim<32){
+    if (false && input_vo.dim<32){
         const int row_per_block = 128/input_vo.dim;
         const int n_block = (input_vo.m+row_per_block-1)/row_per_block;
         {   
@@ -4758,7 +5215,7 @@ void run(DataLoader& input_vo){
 // v34: w/o buffering, sm-based seg allocation, vec r and c of sparse input, a tile-seg per warp, 4 results per thread 
 //#define flex_kernel flexspmm_cuda_k32_vec4_v34
 //#define flex_kernel flexspmm_cuda_vec1_v35
-#define flex_kernel alpha_w_atomic_spmm_v36    
+#define flex_kernel alpha_w_atomic_spmm_v39    
     
     // Vector size of instructions that load B matrix elements.
     map<string,int> k_prop_vec_b
@@ -5071,6 +5528,8 @@ void run(DataLoader& input_vo){
             //
             CE( cudaMemcpy( timing_items.data(), timing_dh.timing_items,
                             timing_items_bytes, cudaMemcpyDeviceToHost ) );
+
+           
 
             NPerf_metrics_on();
             
@@ -5798,6 +6257,18 @@ void cuSpmm(DataLoader& input, Perfs& perfRes){
     perfRes.cuSpmmProcessing = t;
     perfRes.cuSpmm_time = cuSpmmSetup_duration*(1e3) + t;
     
+
+    // Get the cuSPARSE version
+    int version;
+    cusparseStatus_t status;
+    status = cusparseGetVersion(handle, &version);
+    if (status != CUSPARSE_STATUS_SUCCESS) {
+        std::cerr << "Error getting cuSPARSE version: " << status << std::endl;
+        cusparseDestroy(handle);
+        return ;
+    }
+
+    std::cout << "cuSPARSE Version: " << version << std::endl;
     //float gflops = (2*input.nnz*input.dim)/(1e+9);
     //perfRes.cuspmm_throughput = gflops/t/(1e-6);
     //std::cout<<"cuSpmm Throughput: "<<gflops/t<<" gflops/s "<<std::endl;
