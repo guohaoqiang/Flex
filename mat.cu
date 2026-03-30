@@ -850,12 +850,14 @@ void Mat::csr2_DiagTiling(){
 #endif
 
         vector<int> col_n_uses(col_end-col_start,0);
+        int n_unique_cols_in_tile = 0;
         for (int j=row_start; j<row_end; ++j)
           {
             for (int kk=rowPtr[j]; kk<rowPtr[j+1]; ++kk){
                 const int l=colIdx[kk];
                 if (l<col_start) continue;
                 if (l>=col_end) break;
+                if (col_n_uses[l-col_start] == 0) n_unique_cols_in_tile++;
                 col_n_uses[l-col_start]++;
             }
           }
@@ -892,7 +894,7 @@ void Mat::csr2_DiagTiling(){
             int entries_in_row = 0;
             alpha_rowPtr.push_back(nnz_rowPtr);
             
-             for ( auto [ _, kk ]: entries ) {  
+            for ( auto [ _, kk ]: entries ) {  
                 
                 const int l=colIdx[kk];
                 
@@ -907,16 +909,21 @@ void Mat::csr2_DiagTiling(){
                     int total_rows_in_tile = row_end - row_start;
                     bool need_atomic_est = (entries_in_row > 0 && entries_in_row < (rowPtr[j+1]-rowPtr[j]));
                     
-                    // Enhanced model decision (incorporating vectorization and L1 reuse)
+                    // Enhanced model decision: compare estimated L2/HBM
+                    // load transactions per NZ (same unit as the G metric
+                    // when divided by K).  Lower → fewer memory transactions.
                     #ifdef FLEX_MODEL_ENHANCED
                         int kernel_version = 39;  // Default: v39 (float2 vectorization)
-                        double flex_cost = compute_flex_cost_enhanced(
-                            1,  // Cost per non-zero
-                            u,  // Column reuse count
+                        double flex_cost = estimate_flex_ld_per_nz(
+                            u,                      // Column reuse count
                             need_atomic_est,
                             kernel_version,
-                            total_rows_in_tile);
-                        double work_cost = compute_work_cost(1, need_atomic_est);
+                            k,                      // B-matrix width (feature dim)
+                            n_unique_cols_in_tile); // Unique cols for L1 sizing
+                        double work_cost = estimate_work_ld_per_nz(
+                            need_atomic_est,
+                            kernel_version,
+                            k);
                     #else
                         // Fallback to original baseline model
                         const double C_HBM = 1.0;
@@ -927,6 +934,9 @@ void Mat::csr2_DiagTiling(){
                         if (need_atomic_est) flex_cost += C_ATOMIC;
                         double work_cost = C_HBM + C_ATOMIC + C_COMP;
                     #endif
+                    // Use the alpha path when its estimated cost is lower.
+                    if ( flex_cost < work_cost )
+                        force_alpha = true;
                 }
 #endif
                 if (force_alpha) {

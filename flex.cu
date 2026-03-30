@@ -1,4 +1,5 @@
 #include "flex.cuh"
+#include "flex_model_enhanced.h"
 #include <ranges>
 
 #include <set>
@@ -5624,7 +5625,7 @@ void run(DataLoader& input_vo){
               table.entry("aw", "%2d", act_wps);
               fprintf(tile_nperf,"%2d,", act_wps);
 
-              if ( true ){
+              if ( false ){
                 table.entry("ep", "%.2f", mat.empty_wp_p );
                 fprintf(tile_nperf,"%.2f,",  mat.empty_wp_p );
                 table.entry("nzp", "%.2f", mat.band_nz_p );
@@ -5674,12 +5675,14 @@ void run(DataLoader& input_vo){
               
               // Number of nz per occupied tile column.
               const double nz_p_toc = double(mat.nnz) / mat.n_col_sum;
-              // Worst-case: 1.  Ideal: Average degree.
-              table.entry("B-Re1", "%5.2f", nz_p_toc);
-              fprintf(tile_nperf,"%5.2f,", nz_p_toc);
+              if (false){
+                // Worst-case: 1.  Ideal: Average degree.
+                table.entry("B-Re1", "%5.2f", nz_p_toc);
+                fprintf(tile_nperf,"%5.2f,", nz_p_toc);
 
-              table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
-              fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
+                table.entry("B-Re2", "%5.2f", double(mat.nnz) / mat.acc_col);
+                fprintf(tile_nperf,"%5.2f,", double(mat.nnz) / mat.acc_col);
+              }
               if (false){    
                    
                   table.entry("C-", "%d", mat.n_col_sum);
@@ -5889,6 +5892,68 @@ void run(DataLoader& input_vo){
 
               table.entry( "GC", "%4.1f", n_ld_p_madd);
               fprintf(tile_nperf, "%4.1f,", n_ld_p_madd);
+
+              // GL: Instruction-count model of global ld+atom per MADD.
+              //   Matches the G metric (SASS instruction count, not bytes).
+              //   B column reuse (nz_p_toc) does NOT reduce instruction count;
+              //   it only improves L1 hit rate.  So the B term is NOT divided
+              //   by reuse.  L1 reuse is reflected in the byte/traffic models
+              //   (u1, u2) instead.
+              //
+              // alpha_frac: fraction of total nnz that is in the alpha tiling
+              // (the kernel only processes alpha NZ via pillars).
+              {
+                const double alpha_nnz = mat.alpha_colIdx.size();
+                const double n_pillars = std::max(1.0, double(mat.alpha_pillar_rowPtr.size()) - 1);
+                // n_rows_alpha: total row-entries in the alpha tiling.
+                // Rows can appear in multiple pillars (replicated), so this
+                // is typically larger than mat.m.
+                const double n_rows_alpha = std::max(1.0, double(mat.alpha_rowPtr.size()) - 1);
+
+                // In v39, 32 threads process a row jointly.
+                // The cc loop: for(cc=lane_id; cc<K/2; cc+=32),
+                //   so cc_iters = ceil(K/2 / 32) = ceil(K/64).
+                const double cc_iters = std::max(1.0, ceil(double(mat.k) / 64.0));
+
+                // term1: pillar-level metadata LDG per MADD
+                //   pillar_rowPtr[idx], pillar_rowPtr[idx+1] = 2 LDG per pillar
+                //   counter_dev atomicAdd = 1 ATOMG per pillar
+                //   pillarIdx loads ≈ 2 per SM-queue switch (small)
+                const double t1_pillar =
+                    (3.0 * n_pillars
+                     + 2.0 * mat.alpha_pillarIdx.size()
+                     + (mat.sms + 1))
+                    * 32.0 / n_madd;
+
+                // term2: per-row LDG per MADD
+                //   alpha_rowPtr[r] and [r+1] = 2 LDG per alpha row
+                //   segVoMap: 1 LDG per 32 rows (shfl broadcast)
+                const double t2_row =
+                    (2.0 + 1.0/32.0) * n_rows_alpha * 32.0 / n_madd;
+
+                // term3: per-NZ weight loads per MADD
+                //   col_idx + val = 2 LDG per NZ per cc iteration
+                //   (weights are inside the cc loop in v39)
+                const double t3_weight =
+                    2.0 * alpha_nnz * cc_iters * 32.0 / n_madd;
+
+                // term4: B matrix loads per MADD
+                //   1 float2 LDG per NZ per cc iteration (32 threads each load 1 float2)
+                const double t4_B =
+                    alpha_nnz * cc_iters * 32.0 / n_madd;
+
+                // term5: C output atomics (global_atom instructions)
+                //   mat.atomic_op = number of alpha row-entries using atomicAdd
+                //   2 ATOMG per atomic row (res.x and res.y), per cc iteration
+                const double t5_atom =
+                    2.0 * mat.atomic_op * cc_iters * 32.0 / n_madd;
+
+                const double n_ld_p_madd_gl =
+                    t1_pillar + t2_row + t3_weight + t4_B + t5_atom;
+
+                table.entry( "GL", "%4.1f", n_ld_p_madd_gl);
+                fprintf(tile_nperf, "%4.1f,", n_ld_p_madd_gl);
+              }
 
               if (false){
                 table.entry( "pG", "%4.1f", 1.0*mat.est_ld_bytes/4/mat.est_fp);
