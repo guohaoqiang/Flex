@@ -5452,6 +5452,20 @@ void run(DataLoader& input_vo){
         const double n_madd_p_wp = double(n_madd) / wp_sz;
         const double n_b_elt_p_thd = double(mat.k) / threads;
 
+        // Theoretical lower bound on L2→L1 bytes per MADD.
+        // Any correct SpMM must read each A entry (colIdx+val) and each
+        // unique B row at least once from L2.  This is algorithm-agnostic.
+        const int64_t n_ucols = [&](){
+          std::unordered_set<unsigned int> s(
+            mat.alpha_colIdx.begin(), mat.alpha_colIdx.end());
+          return (int64_t)s.size();
+        }();
+        const double lb_l2_per_madd =
+            ( 8.0 * mat.alpha_colIdx.size()        // A: colIdx(4B) + val(4B) per NZ
+            + 4.0 * n_ucols * mat.k                // B: each unique col row, once
+            + 4.0 * (mat.m + 1)                    // A: minimal rowPtr
+            ) / n_madd;
+
         vector<uint> grid_sizes;
 
         if ( opt_vary_grid_size ){
@@ -5902,57 +5916,242 @@ void run(DataLoader& input_vo){
               //
               // alpha_frac: fraction of total nnz that is in the alpha tiling
               // (the kernel only processes alpha NZ via pillars).
+              double l2_model_val = 0, dram_model_val = 0;
               {
                 const double alpha_nnz = mat.alpha_colIdx.size();
                 const double n_pillars = std::max(1.0, double(mat.alpha_pillar_rowPtr.size()) - 1);
                 // n_rows_alpha: total row-entries in the alpha tiling.
-                // Rows can appear in multiple pillars (replicated), so this
-                // is typically larger than mat.m.
                 const double n_rows_alpha = std::max(1.0, double(mat.alpha_rowPtr.size()) - 1);
-
-                // In v39, 32 threads process a row jointly.
-                // The cc loop: for(cc=lane_id; cc<K/2; cc+=32),
-                //   so cc_iters = ceil(K/2 / 32) = ceil(K/64).
                 const double cc_iters = std::max(1.0, ceil(double(mat.k) / 64.0));
 
-                // term1: pillar-level metadata LDG per MADD
-                //   pillar_rowPtr[idx], pillar_rowPtr[idx+1] = 2 LDG per pillar
-                //   counter_dev atomicAdd = 1 ATOMG per pillar
-                //   pillarIdx loads ≈ 2 per SM-queue switch (small)
-                const double t1_pillar =
-                    (3.0 * n_pillars
-                     + 2.0 * mat.alpha_pillarIdx.size()
-                     + (mat.sms + 1))
-                    * 32.0 / n_madd;
+                // ====================================================
+                // Model 1: L2 read bytes per MADD  (L1 → L2 traffic)
+                //   = l1tex__m_xbar2l1tex_read_bytes.sum / n_madd
+                // ====================================================
+                // A-matrix loads (colIdx + val): all 32 threads broadcast
+                // same address.  Sequential z → consecutive 4B values.
+                // Inside cc loop, but second cc iteration hits L1.
+                // Cold bytes = alpha_nnz * (4+4) = 8 * alpha_nnz.
+                // With cc_iters, L1 hit on subsequent iterations for rows
+                // with enough NZ to keep lines resident.  Model as 1× cold.
+                const double l2_A_bytes = 8.0 * alpha_nnz;
 
-                // term2: per-row LDG per MADD
-                //   alpha_rowPtr[r] and [r+1] = 2 LDG per alpha row
-                //   segVoMap: 1 LDG per 32 rows (shfl broadcast)
-                const double t2_row =
-                    (2.0 + 1.0/32.0) * n_rows_alpha * 32.0 / n_madd;
+                // B-matrix loads: 32 threads each load float2 (8B) = 256B
+                // per NZ.  L1 reuse: if same column appears again in same
+                // pillar, L1 hit.  n_col_sum = total unique columns across
+                // all pillars.  So L1-miss B loads = n_col_sum per cc_iter.
+                // Each unique column access: 256 bytes from L2.
+                const double l2_B_bytes = 256.0 * mat.n_col_sum * cc_iters;
 
-                // term3: per-NZ weight loads per MADD
-                //   col_idx + val = 2 LDG per NZ per cc iteration
-                //   (weights are inside the cc loop in v39)
-                const double t3_weight =
-                    2.0 * alpha_nnz * cc_iters * 32.0 / n_madd;
+                // Metadata: rowPtr (2 per alpha row × 4B, broadcast),
+                //   segVoMap (1 per 32 rows × 4B), pillar_rowPtr, pillarIdx.
+                //   All broadcast (32 threads same addr) → 1 sector = 32B per miss.
+                //   But consecutive entries are adjacent → sectored.
+                //   Approximate: just use data size × sector overhead.
+                const double l2_meta_bytes =
+                    (2.0 * n_rows_alpha + n_rows_alpha/32.0) * 4.0  // rowPtr + segVoMap
+                    + (2.0 * n_pillars) * 4.0                        // pillar_rowPtr
+                    + mat.alpha_pillarIdx.size() * 4.0;              // pillarIdx
 
-                // term4: B matrix loads per MADD
-                //   1 float2 LDG per NZ per cc iteration (32 threads each load 1 float2)
-                const double t4_B =
-                    alpha_nnz * cc_iters * 32.0 / n_madd;
+                // C output atomics: bypass L1, go to L2.
+                // Measured separately; model = 2 atomics per atomic_row per cc_iter,
+                // each 4B, but atomic traffic is harder to model precisely.
+                // Use measured value for now.
+                const double l2_atom_bytes_meas =
+                    NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes_mem_global_op_atom.sum");
 
-                // term5: C output atomics (global_atom instructions)
-                //   mat.atomic_op = number of alpha row-entries using atomicAdd
-                //   2 ATOMG per atomic row (res.x and res.y), per cc iteration
-                const double t5_atom =
-                    2.0 * mat.atomic_op * cc_iters * 32.0 / n_madd;
+                const double l2_rd_model = (l2_A_bytes + l2_B_bytes + l2_meta_bytes) / n_madd;
+                const double l2_rd_model_with_atom = l2_rd_model + l2_atom_bytes_meas / n_madd;
 
-                const double n_ld_p_madd_gl =
-                    t1_pillar + t2_row + t3_weight + t4_B + t5_atom;
+                const double l2_rd_meas =
+                    NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
 
-                table.entry( "GL", "%4.1f", n_ld_p_madd_gl);
-                fprintf(tile_nperf, "%4.1f,", n_ld_p_madd_gl);
+                // ====================================================
+                // Model 2: DRAM bytes per MADD
+                //   = dram__bytes.sum / n_madd
+                // ====================================================
+                //
+                // NPerf profiling: CUPTI_KernelReplay mode.  The user
+                // loop calls the kernel once; CUPTI may replay it
+                // internally.  The profiling range covers ONE kernel
+                // launch.  cudaMemset(C) runs BEFORE the profiling
+                // range → its direct DRAM writes are NOT captured.
+                // However, cudaMemset fills L2 with C zeros, evicting
+                // B lines from the previous pass.  The kernel thus
+                // starts with C warm in L2 and B cold.
+                //
+                // Timeline for the profiled kernel launch:
+                //   1. L2 state at entry: C zeros fill L2 (from memset),
+                //      B is cold (evicted by memset).
+                //   2. Kernel streams A (colIdx+val), fetches B rows,
+                //      and does atomic RMW on C.
+                //   3. B rows loaded from DRAM fill L2, competing with
+                //      C lines already there.  A streams through.
+                //
+                // Data footprints:
+                //   B = m * K * 4      (dense input matrix, read-only)
+                //   C = m * K * 4      (dense output matrix, atomic RMW)
+                //   A = alpha_nnz * 8  (sparse colIdx + val, streaming)
+                //
+                const double B_total_bytes = double(mat.m) * mat.k * 4.0;
+                const double A_total_bytes = alpha_nnz * 8.0; // colIdx + val
+                const double C_total_bytes = double(mat.m) * mat.k * 4.0;
+                const double L2_capacity = 51200.0 * 1024.0; // 51200 KB H100
+                const double L2_eff = L2_capacity * 0.80;    // ~80% usable
+
+                const double hot_set = B_total_bytes + C_total_bytes;
+                const double total_ws = hot_set + A_total_bytes;
+
+                // ---- DRAM read/write components ----
+                //
+                // dram_rd_B:  B rows loaded from DRAM (cold after memset).
+                // dram_rd_A:  A (colIdx+val) streamed from DRAM.
+                // dram_rd_C:  Atomic RMW on C lines evicted from L2 →
+                //             must read from DRAM before modify+write.
+                // dram_wr_C:  Dirty C lines evicted from L2 → written
+                //             back to DRAM.
+                //
+                // Note: B is read-only → no DRAM write-back for B.
+                //       B evicted from L2 is simply discarded (clean).
+                //
+                double dram_rd_A = 0, dram_rd_B = 0;
+                double dram_rd_C = 0, dram_wr_C = 0;
+
+                if ( total_ws <= L2_eff ) {
+                  // ---- Tier 1: everything fits in L2 ----
+                  // After warm-up (first pass loads everything), all
+                  // subsequent accesses hit L2.  No DRAM traffic.
+                  // cudaMemset(C) just overwrites C in L2 — no eviction.
+                  dram_rd_A = 0;  dram_rd_B = 0;
+                  dram_rd_C = 0;  dram_wr_C = 0;
+
+                } else if ( hot_set <= L2_eff ) {
+                  // ---- Tier 2: B+C fit in L2, A streams ----
+                  // After memset, L2 holds C (warm).  B fits in the
+                  // remaining L2 space.  A streams from DRAM.
+                  // No B or C misses in steady state.
+                  dram_rd_A = A_total_bytes;  // A always from DRAM
+                  dram_rd_B = 0;              // B fits alongside C
+                  dram_rd_C = 0;  dram_wr_C = 0;
+
+                } else {
+                  // ---- Tier 3: B+C overflow L2 ----
+                  //
+                  // L2 overflow model.
+                  //
+                  // The L2 receives total traffic from the L1 level:
+                  //   l2_total = l2_A + l2_B + l2_meta + l2_atom
+                  //
+                  // The portion that fits in L2 is served from cache.
+                  // The excess overflows to DRAM.  However, not all
+                  // overflow translates 1:1 to DRAM because:
+                  //   - Clean data (B, A) can be discarded on eviction
+                  //     without a DRAM write, but must be re-read on
+                  //     the next miss.
+                  //   - Dirty data (C) requires a write-back on
+                  //     eviction plus a re-read on the next atomic.
+                  //   - L2 set-associative conflicts mean the effective
+                  //     capacity is lower than nominal L2_eff.
+                  //   - Temporal locality (B rows reused within short
+                  //     time windows) provides extra hits beyond what
+                  //     a capacity model predicts.
+                  //
+                  // Empirical observation: on H100, the effective DRAM
+                  // traffic for this kernel scales as:
+                  //   DRAM ≈ (L2_traffic - L2_eff) × α
+                  // where α ≈ 0.375 accounts for the net effect of
+                  // the above factors.  This holds because:
+                  //   - α < 0.5: most evicted clean data (B rows) has
+                  //     enough temporal locality that many evictions
+                  //     never cause a DRAM re-read.
+                  //   - α > 0: the overflow does generate real DRAM
+                  //     traffic, especially for cold B loads and C
+                  //     atomic write-backs.
+                  //
+                  // Total L2 traffic (from the L1→L2 model):
+                  const double l2_total_traffic =
+                      l2_A_bytes + l2_B_bytes + l2_meta_bytes
+                      + l2_atom_bytes_meas;
+
+                  // DRAM overflow: L2 traffic exceeding L2 capacity.
+                  const double l2_overflow =
+                      std::max(0.0, l2_total_traffic - L2_eff);
+
+                  // Empirical scaling factor for L2→DRAM spill.
+                  constexpr double alpha_dram = 0.375;
+
+                  const double dram_total_overflow = l2_overflow * alpha_dram;
+
+                  // A: streaming data always goes to DRAM.
+                  dram_rd_A = A_total_bytes;
+
+                  // Remaining DRAM traffic split between B (reads) and
+                  // C (reads + writes) proportional to their L2 traffic.
+                  const double dram_BC = std::max(0.0,
+                      dram_total_overflow - dram_rd_A);
+
+                  // B fraction of L2 traffic (excluding A):
+                  const double l2_BC_total = l2_B_bytes + l2_atom_bytes_meas;
+                  const double B_frac = (l2_BC_total > 0)
+                      ? l2_B_bytes / l2_BC_total : 0.5;
+
+                  dram_rd_B = dram_BC * B_frac;
+
+                  // C: atomic traffic causes both reads and writes.
+                  // Each C DRAM miss = 1 read (fetch) + 1 write (evict).
+                  // Split the C portion equally between reads and writes.
+                  const double dram_C_total = dram_BC * (1.0 - B_frac);
+                  dram_rd_C = dram_C_total * 0.5;
+                  dram_wr_C = dram_C_total * 0.5;
+                }
+
+                const double dram_rd_model =
+                    (dram_rd_A + dram_rd_B + dram_rd_C) / n_madd;
+                const double dram_wr_model = dram_wr_C / n_madd;
+                const double dram_total_model = dram_rd_model + dram_wr_model;
+
+                const double dram_meas =
+                    NPerf_metric_value_get("dram__bytes.sum") / n_madd;
+                const double dram_rd_meas =
+                    32.0 * NPerf_metric_value_get("dram__sectors_read.sum") / n_madd;
+                const double dram_wr_meas =
+                    32.0 * NPerf_metric_value_get("dram__sectors_write.sum") / n_madd;
+
+                // ====================================================
+                // Debug output (first ordering only)
+                // ====================================================
+                static bool model_debug_printed = false;
+                if ( !model_debug_printed ) {
+                  model_debug_printed = true;
+                  const int tier = (total_ws <= L2_eff) ? 1
+                                 : (hot_set  <= L2_eff) ? 2 : 3;
+                  fprintf(stderr, "=== Traffic Model Debug (first config) ===\n");
+                  fprintf(stderr, "  alpha_nnz=%.0f  n_rows=%.0f  n_pill=%.0f  cc=%g  m=%d  K=%d\n",
+                          alpha_nnz, n_rows_alpha, n_pillars, cc_iters, mat.m, mat.k);
+                  fprintf(stderr, "  n_col_sum=%ld  nz_p_toc=%.2f  acc_col=%ld\n",
+                          mat.n_col_sum, double(mat.nnz)/mat.n_col_sum, mat.acc_col);
+                  fprintf(stderr, "  L2 model/MADD: A=%.3f  B=%.3f  meta=%.3f  atom=%.3f  total=%.4f\n",
+                          l2_A_bytes/n_madd, l2_B_bytes/n_madd, l2_meta_bytes/n_madd,
+                          l2_atom_bytes_meas/n_madd, l2_rd_model_with_atom);
+                  fprintf(stderr, "  L2 measured:    %.4f bytes/MADD\n", l2_rd_meas);
+                  fprintf(stderr, "  Sizes: B=%.1fMB  A=%.1fMB  C=%.1fMB  L2_eff=%.1fMB  total_ws=%.1fMB\n",
+                          B_total_bytes/1e6, A_total_bytes/1e6, C_total_bytes/1e6,
+                          L2_eff/1e6, total_ws/1e6);
+                  fprintf(stderr, "  Tier=%d  (B+C=%.1fMB vs L2_eff=%.1fMB, overflow=%.1fMB)\n",
+                          tier, hot_set/1e6, L2_eff/1e6,
+                          std::max(0.0, hot_set - L2_eff)/1e6);
+                  fprintf(stderr, "  DRAM model rd/MADD: A=%.4f  B=%.4f  C=%.4f  total_rd=%.4f\n",
+                          dram_rd_A/n_madd, dram_rd_B/n_madd, dram_rd_C/n_madd,
+                          dram_rd_model);
+                  fprintf(stderr, "  DRAM model wr/MADD: C=%.4f  total_wr=%.4f\n",
+                          dram_wr_C/n_madd, dram_wr_model);
+                  fprintf(stderr, "  DRAM model total:   %.4f\n", dram_total_model);
+                  fprintf(stderr, "  DRAM measured:   rd=%.4f  wr=%.4f  total=%.4f\n",
+                          dram_rd_meas, dram_wr_meas, dram_meas);
+                }
+
+                l2_model_val = l2_rd_model_with_atom;
+                dram_model_val = dram_total_model;
               }
 
               if (false){
@@ -5960,8 +6159,8 @@ void run(DataLoader& input_vo){
                 fprintf(tile_nperf, "%4.1f,", 1.0*mat.est_ld_bytes/4/mat.est_fp);
               }
 
-              table.entry( "LDe", "%4.1f", NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
-              fprintf(tile_nperf, "%4.1f,",NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
+            //   table.entry( "LDe", "%4.1f", NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
+            //   fprintf(tile_nperf, "%4.1f,",NPerf_metric_value_get("smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"));
               
               if ( show_insn_local )
                 table.entry
@@ -6049,14 +6248,14 @@ void run(DataLoader& input_vo){
               //        2*alpha_pillar_rowPtr_dev.size()*32: each entry of alpha_pillar_rowPtr_dev is loaded by 32 threads twice (head & tail)
               // atom_bytes: atomic update C + counter_dev
               // nD = 4/u + 8/k + pillar_level + atom_bytes
-              double u1 = 4.0 / ( nD - 8.0/mat.k - 
-                (2* mat.alpha_rowPtr.size() + 
-                mat.alpha_pillarIdx.size() + 
-                mat.alpha_pillar_rowPtr.size())*4.0 / n_madd - atom_bytes );
-              double u2 = 4.0 / ( nD - 8.0/mat.k - 
-                (2* mat.alpha_rowPtr.size() + 
-                mat.alpha_pillarIdx.size() + 
-                8 * mat.alpha_pillar_rowPtr.size())*4.0 / n_madd - atom_bytes );
+              // double u1 = 4.0 / ( nD - 8.0/mat.k - 
+              //   (2* mat.alpha_rowPtr.size() + 
+              //   mat.alpha_pillarIdx.size() + 
+              //   mat.alpha_pillar_rowPtr.size())*4.0 / n_madd - atom_bytes );
+              // double u2 = 4.0 / ( nD - 8.0/mat.k - 
+              //   (2* mat.alpha_rowPtr.size() + 
+              //   mat.alpha_pillarIdx.size() + 
+              //   8 * mat.alpha_pillar_rowPtr.size())*4.0 / n_madd - atom_bytes );
               if (false){
                   table.entry( "nD", "%5.2f",nD );
                   fprintf(tile_nperf, "%5.2f,",nD );
@@ -6066,11 +6265,12 @@ void run(DataLoader& input_vo){
                   fprintf(tile_nperf, "%5.2f,",(2*mat.alpha_pillarIdx.size()*32 + 2*mat.alpha_pillar_rowPtr.size()*32)*4.0 / n_madd );
                   table.entry( "at", "%5.2f",atom_bytes );
                   fprintf(tile_nperf, "%5.2f,",atom_bytes );
+                //   table.entry( "u1", "%5.2f",u1 );
+                //   fprintf(tile_nperf, "%5.2f,",u1 );
+                //   table.entry( "u2", "%5.2f",u2 );
+                //   fprintf(tile_nperf, "%5.2f,",u2 );
               }
-              table.entry( "u1", "%5.2f",u1 );
-              fprintf(tile_nperf, "%5.2f,",u1 );
-              table.entry( "u2", "%5.2f",u2 );
-              fprintf(tile_nperf, "%5.2f,",u2 );
+              
 
               table.entry
                 ( "Bytes", "%5.2f",
@@ -6079,6 +6279,10 @@ void run(DataLoader& input_vo){
               fprintf(tile_nperf, "%5.2f,",
                   NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum")
                     / n_madd );
+              table.entry( "L2m", "%4.2f", l2_model_val);
+              fprintf(tile_nperf, "%4.2f,", l2_model_val);
+              table.entry( "LB", "%4.2f", lb_l2_per_madd);
+              fprintf(tile_nperf, "%4.2f,", lb_l2_per_madd);
               if ( false){
                   table.entry
                     ( "Trans", "%5.2f",
@@ -6139,6 +6343,8 @@ void run(DataLoader& input_vo){
                   NPerf_metric_value_get("dram__bytes.sum") / n_madd );
               fprintf(tile_nperf, "%5.2f,",
                   NPerf_metric_value_get("dram__bytes.sum") / n_madd );
+              table.entry( "Dm", "%4.2f", dram_model_val);
+              fprintf(tile_nperf, "%4.2f,", dram_model_val);
               table.entry
                 ( "GB/s", "%4.0f",
                   NPerf_metric_value_get("dram__bytes.sum") / et_seconds * 1e-9 );
@@ -6162,6 +6368,9 @@ void run(DataLoader& input_vo){
                   else fprintf(tile_nperf, "%9.2f\n", 2 * 1e-9 * n_madd / et_seconds );
                   table.header_span_end();
               }
+            //   table.header_span_start("L2 (Bytes)"); 
+            //   double l2_rd = 32*NPerf_metric_value_get("lts__t_sectors_op_read.sum");
+            //   table.entry( "l2_rd", "%7.1f",l2_rd );
                 if ( roofline ){
                     double flops = NPerf_metric_value_get("smsp__sass_thread_inst_executed_op_fadd_pred_on.sum") + 
                         NPerf_metric_value_get("smsp__sass_thread_inst_executed_op_fmul_pred_on.sum") + 
@@ -6195,9 +6404,7 @@ void run(DataLoader& input_vo){
                     fprintf(tile_nperf, "%7.4f,",l1_ai);
                     //table.header_span_end();
                     
-                    //table.header_span_start("L2 (Bytes)"); 
-                    //double l2_rd = 32*NPerf_metric_value_get("lts__t_sectors_op_read.sum");
-                    //table.entry( "l2_rd", "%7.1f",l2_rd );
+                    
                     //double l2_atm = 32*NPerf_metric_value_get("lts__t_sectors_op_atom.sum");
                     //table.entry( "l2_atm", "%7.1f",l2_atm );
                     //double l2_red = 32*NPerf_metric_value_get("lts__t_sectors_op_red.sum");
