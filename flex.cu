@@ -5025,7 +5025,7 @@ void run(DataLoader& input_vo){
 
     Perfs perfRes;
     input_vo.c_cuSpmm_run(perfRes);
-    
+
     // Prepare a DFS-ordered matrix.
     DataLoaderDFS input_dfs(input_vo);
     DataLoaderRabbit input_rabbit(input_vo);
@@ -5455,14 +5455,16 @@ void run(DataLoader& input_vo){
         // Theoretical lower bound on L2→L1 bytes per MADD.
         // Any correct SpMM must read each A entry (colIdx+val) and each
         // unique B row at least once from L2.  This is algorithm-agnostic.
-        const int64_t n_ucols = [&](){
-          std::unordered_set<unsigned int> s(
-            mat.alpha_colIdx.begin(), mat.alpha_colIdx.end());
-          return (int64_t)s.size();
-        }();
+        //
+        // For B: each SM has its own L1 and must independently load B
+        // rows it needs.  acc_col = sum of unique columns across all
+        // #SM+1 work queues (per-SM queues + load-balance queue).
+        // This is the tightest hardware-aware bound: even an ideal
+        // algorithm must load acc_col B rows total from L2, because
+        // different SMs cannot share L1 cache.
         const double lb_l2_per_madd =
             ( 8.0 * mat.alpha_colIdx.size()        // A: colIdx(4B) + val(4B) per NZ
-            + 4.0 * n_ucols * mat.k                // B: each unique col row, once
+            + 4.0 * mat.acc_col * mat.k            // B: unique cols per SM queue
             + 4.0 * (mat.m + 1)                    // A: minimal rowPtr
             ) / n_madd;
 

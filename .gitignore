@@ -1,5 +1,8 @@
 # executable
 flex
+dtc_spmm
+flashsparse_spmm
+voltrix_spmm
 sspmm_128
 sspmm_32
 *.o
@@ -8,3 +11,4 @@ sspmm_32
 *.txt
 *.log
 *.out
+*.npz
