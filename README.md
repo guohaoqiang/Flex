@@ -9,7 +9,7 @@ This repository contains **Flex** (our SpMM kernel) along with **standalone benc
 | Baseline | Source File | Paper / Venue |
 |----------|------------|---------------|
 | **DTC-SpMM** | `dtc_spmm.cu` | [DTC-SpMM (ASPLOS '24)](https://github.com/HPMLL/DTC-SpMM_ASPLOS24) |
-| **FlashSparse** | `flashsparse_spmm.cu` | [FlashSparse (ASPLOS '25)](https://github.com/grvvrmtech/FlashSparse) |
+| **FlashSparse** | `flashsparse_spmm.cu` | [FlashSparse (ASPLOS '25)](https://github.com/ParCIS/FlashSparse) |
 | **Voltrix-SpMM** | `voltrix_spmm.cu` | [Voltrix-SpMM (ATC '25)](https://github.com/YaqiXia/Voltrix-SpMM) |
 | **Flex** | `flex.cu` / `flex_spmm.cu` | Ours (CUDA cores) |
 
