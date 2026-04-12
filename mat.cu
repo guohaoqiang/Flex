@@ -11,8 +11,8 @@
  * compares an estimated cost of keeping a non-zero in an alpha (flex)
  * tile vs. placing it in the balancing work queue.
  */
-#define FLEX_MODEL_DECISION
-#define FLEX_MODEL_ENHANCED
+// #define FLEX_MODEL_DECISION
+// #define FLEX_MODEL_ENHANCED
 
 // Global logging for model predictions
 static std::ofstream model_log;
@@ -1112,14 +1112,43 @@ Mat::alpha_stats_collect(FILE *stream)
   // expect perfect reuse within a pillar
   n_col_sum = 0;
   
+  int64_t total_nz_in_pillars = 0;
+  int64_t max_unique_cols_pillar = 0;
+  int64_t min_unique_cols_pillar = INT64_MAX;
+  int64_t max_nz_pillar = 0;
+  
   for ( uint pillar_idx = 0; pillar_idx < n_pillars; pillar_idx++ )
     {
       unordered_set<int> colset; 
-      for (int i=alpha_rowPtr[alpha_pillar_rowPtr[pillar_idx]]; i<alpha_rowPtr[alpha_pillar_rowPtr[pillar_idx+1]]; ++i){
+      int nz_start = alpha_rowPtr[alpha_pillar_rowPtr[pillar_idx]];
+      int nz_end   = alpha_rowPtr[alpha_pillar_rowPtr[pillar_idx+1]];
+      int nz_count = nz_end - nz_start;
+      for (int i=nz_start; i<nz_end; ++i){
         colset.insert(alpha_colIdx[i]);
       }
-      n_col_sum += colset.size();
-    } 
+      int64_t ucols = colset.size();
+      n_col_sum += ucols;
+      total_nz_in_pillars += nz_count;
+      if (ucols > max_unique_cols_pillar) max_unique_cols_pillar = ucols;
+      if (ucols < min_unique_cols_pillar) min_unique_cols_pillar = ucols;
+      if (nz_count > max_nz_pillar) max_nz_pillar = nz_count;
+    }
+  
+    if (false){
+        fprintf(stream, "=== alpha_stats_collect ===\n");
+        fprintf(stream, "  n_pillars=%u  nnz=%d  total_nz_in_pillars=%ld\n",
+                n_pillars, nnz, total_nz_in_pillars);
+        fprintf(stream, "  n_col_sum=%ld  B-Re1=nnz/n_col_sum=%.4f\n",
+                n_col_sum, double(nnz)/n_col_sum);
+        fprintf(stream, "  per-pillar unique cols: min=%ld  max=%ld  avg=%.1f\n",
+                min_unique_cols_pillar, max_unique_cols_pillar,
+                double(n_col_sum)/n_pillars);
+        fprintf(stream, "  per-pillar NZ: max=%ld  avg=%.1f\n",
+                max_nz_pillar, double(total_nz_in_pillars)/n_pillars);
+        int n_rows_in_pillars = alpha_pillar_rowPtr[n_pillars] - alpha_pillar_rowPtr[0];
+        fprintf(stream, "  total alpha rows=%d  avg rows/pillar=%.1f\n",
+                n_rows_in_pillars, double(n_rows_in_pillars)/n_pillars); 
+    }
  
   // expect perfect reuse within an SM
   // Assume workloads in the last queue (used for workload balance) are processed in an SM

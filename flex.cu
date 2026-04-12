@@ -5963,7 +5963,7 @@ void run(DataLoader& input_vo){
                     NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes_mem_global_op_atom.sum");
 
                 const double l2_rd_model = (l2_A_bytes + l2_B_bytes + l2_meta_bytes) / n_madd;
-                const double l2_rd_model_with_atom = l2_rd_model + l2_atom_bytes_meas / n_madd;
+                const double l2_rd_model_wo_atom = l2_rd_model;
 
                 const double l2_rd_meas =
                     NPerf_metric_value_get("l1tex__m_xbar2l1tex_read_bytes.sum") / n_madd;
@@ -6072,7 +6072,7 @@ void run(DataLoader& input_vo){
                   //
                   // Total L2 traffic (from the L1→L2 model):
                   const double l2_total_traffic =
-                      l2_A_bytes + l2_B_bytes + l2_meta_bytes;
+                      l2_A_bytes + l2_B_bytes + l2_meta_bytes + l2_atom_bytes_meas;
 
                   // DRAM overflow: L2 traffic exceeding L2 capacity.
                   const double l2_overflow =
@@ -6119,22 +6119,40 @@ void run(DataLoader& input_vo){
                     32.0 * NPerf_metric_value_get("dram__sectors_write.sum") / n_madd;
 
                 // ====================================================
-                // Debug output (first ordering only)
+                // Debug output
                 // ====================================================
-                static bool model_debug_printed = false;
-                if ( !model_debug_printed ) {
-                  model_debug_printed = true;
+                
+                if (false){
                   const int tier = (total_ws <= L2_eff) ? 1
                                  : (hot_set  <= L2_eff) ? 2 : 3;
-                  fprintf(stderr, "=== Traffic Model Debug (first config) ===\n");
+                  fprintf(stderr, "=== Traffic Model Debug ===\n");
                   fprintf(stderr, "  alpha_nnz=%.0f  n_rows=%.0f  n_pill=%.0f  cc=%g  m=%d  K=%d\n",
                           alpha_nnz, n_rows_alpha, n_pillars, cc_iters, mat.m, mat.k);
                   fprintf(stderr, "  n_col_sum=%ld  nz_p_toc=%.2f  acc_col=%ld\n",
                           mat.n_col_sum, double(mat.nnz)/mat.n_col_sum, mat.acc_col);
                   fprintf(stderr, "  L2 model/MADD: A=%.3f  B=%.3f  meta=%.3f  atom=%.3f  total=%.4f\n",
                           l2_A_bytes/n_madd, l2_B_bytes/n_madd, l2_meta_bytes/n_madd,
-                          l2_atom_bytes_meas/n_madd, l2_rd_model_with_atom);
+                          l2_atom_bytes_meas/n_madd, l2_rd_model_wo_atom);
                   fprintf(stderr, "  L2 measured:    %.4f bytes/MADD\n", l2_rd_meas);
+
+                  // ---- L2m component percentage breakdown ----
+                  const double l2_total_model_bytes = l2_A_bytes + l2_B_bytes + l2_meta_bytes + l2_atom_bytes_meas;
+                  fprintf(stderr, "  L2m component %% breakdown:\n");
+                  fprintf(stderr, "    L2_A    (A colIdx+val):   %8.0f bytes  %5.1f%%\n",
+                          l2_A_bytes, 100.0 * l2_A_bytes / l2_total_model_bytes);
+                  fprintf(stderr, "    L2_B    (B row loads):    %8.0f bytes  %5.1f%%\n",
+                          l2_B_bytes, 100.0 * l2_B_bytes / l2_total_model_bytes);
+                  fprintf(stderr, "    L2_meta (metadata):       %8.0f bytes  %5.1f%%\n",
+                          l2_meta_bytes, 100.0 * l2_meta_bytes / l2_total_model_bytes);
+                  fprintf(stderr, "    L2_atom (C atomics):      %8.0f bytes  %5.1f%%\n",
+                          l2_atom_bytes_meas, 100.0 * l2_atom_bytes_meas / l2_total_model_bytes);
+                  fprintf(stderr, "    TOTAL model:              %8.0f bytes\n", l2_total_model_bytes);
+                  fprintf(stderr, "    TOTAL measured:           %8.0f bytes\n", l2_rd_meas * n_madd);
+                  fprintf(stderr, "  B-Re1 (pillar reuse): %.2f   B-Re2 (SM reuse): %.2f   headroom: %.1f%%\n",
+                          double(mat.nnz)/mat.n_col_sum,
+                          double(mat.nnz)/mat.acc_col,
+                          100.0 * (1.0 - double(mat.acc_col) / mat.n_col_sum));
+
                   fprintf(stderr, "  Sizes: B=%.1fMB  A=%.1fMB  C=%.1fMB  L2_eff=%.1fMB  total_ws=%.1fMB\n",
                           B_total_bytes/1e6, A_total_bytes/1e6, C_total_bytes/1e6,
                           L2_eff/1e6, total_ws/1e6);
@@ -6151,7 +6169,7 @@ void run(DataLoader& input_vo){
                           dram_rd_meas, dram_wr_meas, dram_meas);
                 }
 
-                l2_model_val = l2_rd_model_with_atom;
+                l2_model_val = l2_rd_model_wo_atom;
                 dram_model_val = dram_total_model;
               }
 
