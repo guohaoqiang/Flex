@@ -5945,14 +5945,14 @@ void run(DataLoader& input_vo){
                 // Each unique column access: 256 bytes from L2.
                 const double l2_B_bytes = 256.0 * mat.n_col_sum * cc_iters;
 
-                // Metadata: rowPtr (2 per alpha row × 4B, broadcast),
+                // Metadata: rowPtr (alpha row × 4B, broadcast),
                 //   segVoMap (1 per 32 rows × 4B), pillar_rowPtr, pillarIdx.
                 //   All broadcast (32 threads same addr) → 1 sector = 32B per miss.
                 //   But consecutive entries are adjacent → sectored.
                 //   Approximate: just use data size × sector overhead.
                 const double l2_meta_bytes =
-                    (2.0 * n_rows_alpha + n_rows_alpha/32.0) * 4.0  // rowPtr + segVoMap
-                    + (2.0 * n_pillars) * 4.0                        // pillar_rowPtr
+                    (n_rows_alpha + n_rows_alpha/32.0) * 4.0  // rowPtr + segVoMap
+                    + (n_pillars) * 4.0                        // pillar_rowPtr
                     + mat.alpha_pillarIdx.size() * 4.0;              // pillarIdx
 
                 // C output atomics: bypass L1, go to L2.
@@ -6072,8 +6072,7 @@ void run(DataLoader& input_vo){
                   //
                   // Total L2 traffic (from the L1→L2 model):
                   const double l2_total_traffic =
-                      l2_A_bytes + l2_B_bytes + l2_meta_bytes
-                      + l2_atom_bytes_meas;
+                      l2_A_bytes + l2_B_bytes + l2_meta_bytes;
 
                   // DRAM overflow: L2 traffic exceeding L2 capacity.
                   const double l2_overflow =
