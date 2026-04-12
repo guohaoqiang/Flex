@@ -5435,7 +5435,7 @@ void run(DataLoader& input_vo){
                    perfRes.cuSpmmSetup,perfRes.cuSpmmProcessing,perfRes.cuSpmm_time); 
         }
         // mat.transfer2();
-        // spMats[id].dataVolume_est2();
+        //spMats[id].dataVolume_est2();
         mat.alpha_transfer();
         spMats[id].alpha_dataVolume_est();
         spMats[id].launch_prep();

@@ -324,6 +324,47 @@ void Mat::alpha_transfer(){
     CHECK_CUDA(cudaMemset( counter_dev,  0, (sms+1)*sizeof(int))) ;
 }
 void Mat::alpha_dataVolume_est(){
+  // Compute acc_col: sum of unique columns per work unit, mirroring the
+  // approach in dataVolume_est2().
+  //
+  // alpha_pillarIdx layout (size = n_sms + 2):
+  //   [0 .. n_sms-1]  → static SM assignments (pillar ranges per SM)
+  //   [n_sms]         → start of the dynamic (load-balance) queue
+  //   [n_sms+1]       → end sentinel (total pillars)
+  //
+  // Static SMs:  count unique columns across ALL pillars assigned to
+  //              the same SM (reuse within an SM is expected).
+  // Dynamic queue: count unique columns PER PILLAR, because each pillar
+  //                may be dispatched to a different SM at runtime, so no
+  //                cross-pillar reuse can be assumed.
+
+  const int n_sms = alpha_pillarIdx.size() - 2;
+
+  acc_col = 0;
+
+  // ---- Static SMs: unique columns per SM ----
+  for (int sm = 0; sm < n_sms; ++sm) {
+    const int start_pillar = alpha_pillarIdx[sm];
+    const int end_pillar   = alpha_pillarIdx[sm + 1];
+    unordered_set<int> colset;
+    for (int j = alpha_rowPtr[alpha_pillar_rowPtr[start_pillar]];
+             j < alpha_rowPtr[alpha_pillar_rowPtr[end_pillar]]; ++j) {
+      colset.insert(alpha_colIdx[j]);
+    }
+    acc_col += colset.size();
+  }
+
+  // ---- Dynamic queue: unique columns per pillar (no cross-pillar reuse) ----
+  const int dq_start = alpha_pillarIdx[n_sms];
+  const int dq_end   = alpha_pillarIdx[n_sms + 1];
+  for (int p = dq_start; p < dq_end; ++p) {
+    unordered_set<int> colset;
+    for (int j = alpha_rowPtr[alpha_pillar_rowPtr[p]];
+             j < alpha_rowPtr[alpha_pillar_rowPtr[p + 1]]; ++j) {
+      colset.insert(alpha_colIdx[j]);
+    }
+    acc_col += colset.size();
+  }
 }
 void Mat::dataVolume_est(){
     est_fp = int64_t(nnz)*k;
